@@ -43,16 +43,22 @@
   }
   // מערכי אגירה (מחושבים ע"י simulateStorage) — נכללים באגרגציה
   const charge = new Float32Array(N), discharge = new Float32Array(N), soc = new Float32Array(N);
-  const SERIES_ARR = { pv, imp, exp, self, load, cons, bidir, charge, discharge, soc };
+  const impBat = new Float32Array(N);   // יבוא מהרשת אחרי הוספת אגירה = imp + charge - discharge
+  const SERIES_ARR = { pv, imp, exp, self, load, cons, bidir, charge, discharge, soc, impBat };
 
   // ---- הגדרת סדרות לתצוגה (צבעים מ-theme.css) ----
+  // סדרות האגירה (charge/discharge/impBat) מתווספות כפרמטרים רגילים בגרף הראשי,
+  // כבויות כברירת מחדל — להפעלה בבחינת כדאיות הארביטראז'.
   const SERIES = [
-    { id: "load", name: "סך עומס",        color: cv("--s-load"), on: true },
-    { id: "imp",  name: "יבוא מהרשת",      color: cv("--s-imp"),  on: true },
-    { id: "pv",   name: "ייצור PV",        color: cv("--s-pv"),   on: true },
-    { id: "exp",  name: "יצוא לרשת",       color: cv("--s-exp"),  on: true },
-    { id: "self", name: "צריכה עצמית",     color: cv("--s-self"), on: true },
-    { id: "cons", name: "מונה צריכה",      color: cv("--s-cons"), on: false },
+    { id: "load",      name: "סך עומס",        color: cv("--s-load"),      on: true },
+    { id: "imp",       name: "יבוא מהרשת",      color: cv("--s-imp"),       on: true },
+    { id: "pv",        name: "ייצור PV",        color: cv("--s-pv"),        on: true },
+    { id: "exp",       name: "יצוא לרשת",       color: cv("--s-exp"),       on: true },
+    { id: "self",      name: "צריכה עצמית",     color: cv("--s-self"),      on: true },
+    { id: "cons",      name: "מונה צריכה",      color: cv("--s-cons"),      on: false },
+    { id: "charge",    name: "טעינת אגירה",     color: cv("--s-charge"),    on: false, grp: "אגירה" },
+    { id: "discharge", name: "פריקת אגירה",     color: cv("--s-discharge"), on: false, grp: "אגירה" },
+    { id: "impBat",    name: "יבוא עם אגירה",   color: cv("--brand"),       on: false, grp: "אגירה", dash: true },
   ];
 
   // ---- מצב ----
@@ -107,11 +113,8 @@
       const bk = bucketOf(i);
       let o = map.get(bk.key);
       if (!o) {
-        o = { label: bk.label, hours: 0, n: 0,
-              vals: { pv:0, imp:0, exp:0, self:0, load:0, cons:0, bidir:0, charge:0, discharge:0 },
-              peak: { pv:0, imp:0, exp:0, self:0, load:0, cons:0, bidir:0 },
-              cnt: { pv:0, imp:0, exp:0, self:0, load:0, cons:0, bidir:0 },
-              tar: {} };
+        o = { label: bk.label, hours: 0, n: 0, vals: {}, peak: {}, cnt: {}, tar: {} };
+        for (const s of SERIES) { o.vals[s.id] = 0; o.peak[s.id] = 0; o.cnt[s.id] = 0; }
         map.set(bk.key, o); order.push(bk.key);
       }
       o.n++; o.hours += SLOT_H;
@@ -122,8 +125,6 @@
         const pw = v / SLOT_H;                 // הספק רגעי (kW) של הסלוט
         if (pw > o.peak[s.id]) o.peak[s.id] = pw;
       }
-      o.vals.charge += charge[i] || 0;
-      o.vals.discharge += discharge[i] || 0;
       // פילוח תעו״ז — על הכמות הנבחרת לחיוב
       const q = SERIES_ARR[state.costQty][i];
       if (Number.isFinite(q)) {
@@ -137,6 +138,9 @@
   // ============================ סימולציית אגירה ==============================
   // מודל ארביטראז' יומי: פורק בשעות פסגה כדי לקזז יבוא (בלי יצוא לרשת),
   // וטוען בשעות שפל (עדיפות לפני הפסגה). מחשב charge[], discharge[], soc[].
+  function fillImpBat() {
+    for (let i = 0; i < N; i++) impBat[i] = imp[i] + (charge[i] || 0) - (discharge[i] || 0);
+  }
   function simulateStorage() {
     const b = state.bat;
     charge.fill(0); discharge.fill(0); soc.fill(0);
@@ -145,7 +149,7 @@
     const pMax15 = b.cab * b.ac * SLOT_H;                  // kWh לרבע-שעה בהספק AC מלא
     const eff = Math.max(0.01, b.eff / 100);
     const socMinK = capTot * b.socMin / 100;
-    if (capTot <= 0 || usable <= 0 || pMax15 <= 0) return;
+    if (capTot <= 0 || usable <= 0 || pMax15 <= 0) { fillImpBat(); return; }
     const days = Math.floor(N / 96);
     for (let d = 0; d < days; d++) {
       const s0 = d * 96, s1 = s0 + 95;
@@ -177,6 +181,7 @@
         soc[i] = capTot > 0 ? (socK / capTot) * 100 : 0;
       }
     }
+    fillImpBat();
   }
 
   // ערך סדרה לפי המדד הנבחר. NaN כשאין דגימות תקפות בבאקט (חוסר נתונים → פער בגרף).
@@ -197,7 +202,7 @@
   function metricUnit() { return state.metric === "kwh" ? "kWh" : "kW"; }
 
   // ============================ צ'ארטים ======================================
-  let flowChart, tariffChart, chargeChart, dischargeChart;
+  let flowChart, tariffChart;
 
   function renderFlow(agg) {
     const labels = agg.order.map(k => agg.map.get(k).label);
@@ -207,6 +212,7 @@
       return {
         label: s.name, data, borderColor: s.color, backgroundColor: s.color + (state.chartType==="bar"?"CC":"22"),
         borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: .18, fill: state.chartType === "line" ? false : true,
+        borderDash: s.dash ? [6, 4] : undefined,
       };
     });
     const cfg = {
@@ -242,25 +248,8 @@
     tariffChart = new Chart(document.getElementById("tariffChart"), cfg);
   }
 
-  // ---- אגירה: גרפי טעינה/פריקה + KPI חיסכון ----
-  function oneBar(canvasId, existing, labels, data, color, unit) {
-    const cfg = {
-      type: "bar",
-      data: { labels, datasets: [{ data, backgroundColor: color, borderWidth: 0 }] },
-      options: baseOpts(unit, false),
-    };
-    cfg.options.plugins.legend = { display: false };
-    if (existing) existing.destroy();
-    return new Chart(document.getElementById(canvasId), cfg);
-  }
-
+  // ---- אגירה: KPI כדאיות (הגרפים אוחדו לגרף הראשי כסדרות) ----
   function renderStore(agg) {
-    const labels = agg.order.map(k => agg.map.get(k).label);
-    const chg = agg.order.map(k => +(agg.map.get(k).vals.charge).toFixed(2));
-    const dis = agg.order.map(k => +(agg.map.get(k).vals.discharge).toFixed(2));
-    chargeChart = oneBar("chargeChart", chargeChart, labels, chg, cv("--s-charge"), "kWh");
-    dischargeChart = oneBar("dischargeChart", dischargeChart, labels, dis, cv("--s-discharge"), "kWh");
-
     // חיסכון על הטווח הנראה
     const pf = state.vat === "vat" ? "priceVat" : "priceNoVat";
     let tDis = 0, tChg = 0, gross = 0, chgCost = 0, peakOff = 0;
@@ -290,7 +279,8 @@
     const spread = tDis > 0 ? net / tDis : 0;
     document.getElementById("storeFootnote").innerHTML =
       `מודל: פריקה בפסגה לקיזוז יבוא (ללא יצוא לרשת), טעינה בשפל · מחירים ${state.vat==="vat"?"כולל":"ללא"} מע״מ · ` +
-      `רווח ממוצע נטו: <b>${nf2.format(spread)} ₪/קוט״ש נפרק</b>. הגדל את מס׳ הקבינטים כדי להגדיל את החיסכון עד לתקרת הפסגה היומית.`;
+      `רווח ממוצע נטו: <b>${nf2.format(spread)} ₪/קוט״ש נפרק</b>. ` +
+      `בגרף הראשי הפעל את הסדרות <b>טעינת אגירה / פריקת אגירה / יבוא עם אגירה</b> כדי לבחון חזותית את הארביטראז'.`;
   }
 
   function baseOpts(unit, stacked) {
