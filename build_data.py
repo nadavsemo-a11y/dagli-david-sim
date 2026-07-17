@@ -37,6 +37,7 @@ BIDIR_CODE = "737-18000646"
 # ---------------------------------------------------------------------------
 data = defaultdict(lambda: {"pv1": 0.0, "pv2": 0.0, "pv3": 0.0, "cons": 0.0, "imp": 0.0, "exp": 0.0})
 meta = {"customer": "", "address": "", "contract": ""}
+bidir_max = None   # חותם הזמן האחרון של המונה הדו-כיווני (לחיתוך יום חלקי אחרון)
 
 with open(SRC, encoding="utf-8-sig") as f:
     reader = csv.reader(f)
@@ -77,12 +78,16 @@ with open(SRC, encoding="utf-8-sig") as f:
             elif c0 == BIDIR_CODE:
                 slot["imp"] += val
                 slot["exp"] += flow
+                if bidir_max is None or dt > bidir_max:
+                    bidir_max = dt
 
 # ---------------------------------------------------------------------------
 # בניית רשת 15-דק' אחידה מ-min עד max (שעון קיר; פערי DST זניחים)
 # ---------------------------------------------------------------------------
 tmin = min(data.keys())
-tmax = max(data.keys())
+# חיתוך היום החלקי האחרון: הנתונים תקפים רק עד סוף הדיווח של המונה הדו-כיווני.
+# (מונה PV בודד ממשיך לדווח יום נוסף → יום "עומס" פגום בצורת שמש. נחתך.)
+tmax = bidir_max if bidir_max is not None else max(data.keys())
 # יישור תחילת הרשת ל-00:00
 start = tmin.replace(hour=0, minute=0, second=0, microsecond=0)
 step = timedelta(minutes=15)
@@ -120,6 +125,17 @@ imp = [r2(x) for x in imp]
 exp = [r2(x) for x in exp]
 
 # ---------------------------------------------------------------------------
+# ימי חוסר-נתונים: ימים שבהם המונה הדו-כיווני לא דיווח כלל (יבוא+יצוא ליום = 0).
+# ביום כזה "עומס" מחושב כ-ייצור−יצוא בלבד ונראה כפרבולה סולארית מטעה → מסומן.
+# ---------------------------------------------------------------------------
+gap_days = []
+for d in range(n // 96):
+    s0 = d * 96
+    day_bidir = sum(imp[s0:s0 + 96]) + sum(exp[s0:s0 + 96])
+    if day_bidir < 1:   # פחות מ-1 קוט"ש ביממה = חוסר דיווח (אתר פעיל תמיד מייבא >>1/יום)
+        gap_days.append(d)
+
+# ---------------------------------------------------------------------------
 # סיכומים לאימות ולכותרת הדאשבורד
 # ---------------------------------------------------------------------------
 sum_pv = sum(pv)
@@ -134,6 +150,7 @@ meta.update({
     "end": tmax.strftime("%Y-%m-%dT%H:%M"),
     "stepMinutes": 15,
     "n": n,
+    "gapDays": gap_days,   # אינדקסי ימים ללא נתוני מונה דו-כיווני
     "meters": [
         {"role": "PV", "formula": "PV1 + max(PV2,PV3)", "pv1": PV1_CODE, "dup": list(PV_DUP_CODES)},
         {"role": "cons", "code": CONS_CODE},

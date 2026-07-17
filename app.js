@@ -20,15 +20,22 @@
   const slotMs = STEP_MIN * 60000;
 
   // ---- סדרות גולמיות + נגזרות (per-slot) ----
+  // ימי חוסר-נתונים (מונה דו-כיווני לא דיווח): הסדרות התלויות ביבוא/יצוא מסומנות NaN
+  // כדי שלא יצוירו כ"עומס" סולארי מטעה. מונה ה-PV אמיתי ולכן נשמר.
+  const GAP = new Set(D.meta.gapDays || []);
   const pv = D.pv, cons = D.cons, imp = D.imp, exp = D.exp;
   const self = new Float32Array(N), load = new Float32Array(N), bidir = new Float32Array(N);
   const slotDate = new Array(N);       // אובייקט Date (UTC=שעון קיר) לכל סלוט
   const slotTar = new Array(N);        // סיווג תעו״ז לכל סלוט
   for (let i = 0; i < N; i++) {
-    const s = Math.max(0, (pv[i] || 0) - (exp[i] || 0));
-    self[i] = s;
-    load[i] = Math.max(0, (imp[i] || 0) + (pv[i] || 0) - (exp[i] || 0));
-    bidir[i] = (imp[i] || 0) - (exp[i] || 0);   // נטו על המונה הדו-כיווני
+    if (GAP.has((i / 96) | 0)) {
+      imp[i] = exp[i] = cons[i] = NaN;              // חוסר נתונים — לא לצייר
+      self[i] = load[i] = bidir[i] = NaN;
+    } else {
+      self[i] = Math.max(0, (pv[i] || 0) - (exp[i] || 0));
+      load[i] = Math.max(0, (imp[i] || 0) + (pv[i] || 0) - (exp[i] || 0));
+      bidir[i] = (imp[i] || 0) - (exp[i] || 0);     // נטו על המונה הדו-כיווני
+    }
     const t = new Date(BASE + i * slotMs);
     slotDate[i] = t;
     const ds = t.toISOString().slice(0, 10);
@@ -103,22 +110,26 @@
         o = { label: bk.label, hours: 0, n: 0,
               vals: { pv:0, imp:0, exp:0, self:0, load:0, cons:0, bidir:0, charge:0, discharge:0 },
               peak: { pv:0, imp:0, exp:0, self:0, load:0, cons:0, bidir:0 },
+              cnt: { pv:0, imp:0, exp:0, self:0, load:0, cons:0, bidir:0 },
               tar: {} };
         map.set(bk.key, o); order.push(bk.key);
       }
       o.n++; o.hours += SLOT_H;
       for (const s of SERIES) {
-        const v = SERIES_ARR[s.id][i] || 0;
-        o.vals[s.id] += v;
+        const v = SERIES_ARR[s.id][i];
+        if (!Number.isFinite(v)) continue;     // סלוט חוסר-נתונים — מדלגים
+        o.vals[s.id] += v; o.cnt[s.id]++;
         const pw = v / SLOT_H;                 // הספק רגעי (kW) של הסלוט
         if (pw > o.peak[s.id]) o.peak[s.id] = pw;
       }
       o.vals.charge += charge[i] || 0;
       o.vals.discharge += discharge[i] || 0;
       // פילוח תעו״ז — על הכמות הנבחרת לחיוב
-      const q = SERIES_ARR[state.costQty][i] || 0;
-      const tk = slotTar[i].key;
-      o.tar[tk] = (o.tar[tk] || 0) + q;
+      const q = SERIES_ARR[state.costQty][i];
+      if (Number.isFinite(q)) {
+        const tk = slotTar[i].key;
+        o.tar[tk] = (o.tar[tk] || 0) + q;
+      }
     }
     return { order, map, a, b };
   }
@@ -168,11 +179,13 @@
     }
   }
 
-  // ערך סדרה לפי המדד הנבחר
+  // ערך סדרה לפי המדד הנבחר. NaN כשאין דגימות תקפות בבאקט (חוסר נתונים → פער בגרף).
   function metricVal(o, id) {
+    if (o.cnt && o.cnt[id] === 0) return NaN;
     if (state.metric === "kwh") return o.vals[id];
     if (state.metric === "kwpeak") return o.peak[id];
-    return o.hours > 0 ? o.vals[id] / o.hours : 0;   // kwavg
+    const h = (o.cnt ? o.cnt[id] : o.n) * SLOT_H;    // שעות תקפות בלבד
+    return h > 0 ? o.vals[id] / h : NaN;             // kwavg
   }
 
   // ============================ פורמט ========================================
@@ -480,7 +493,10 @@
   function updateRangeInfo() {
     const a = slotDate[state.rStart], b = slotDate[state.rEnd];
     const f = t => `${pad(t.getUTCDate())}/${pad(t.getUTCMonth()+1)}/${t.getUTCFullYear()}`;
-    document.getElementById("rangeInfo").textContent = `תקופה מוצגת: ${f(a)} — ${f(b)}`;
+    let gaps = 0;
+    for (const d of GAP) if (d * 96 >= state.rStart && d * 96 <= state.rEnd) gaps++;
+    const gapTxt = gaps ? ` · ⚠ ${gaps} ימי חוסר-נתונים (מונה דו-כיווני) — מוצגים כפער` : "";
+    document.getElementById("rangeInfo").textContent = `תקופה מוצגת: ${f(a)} — ${f(b)}${gapTxt}`;
   }
 
   function renderSeriesChips() {
