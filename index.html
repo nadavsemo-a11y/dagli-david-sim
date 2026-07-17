@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>סימולציה דגלי דוד · ניתוח מונים ואגירה</title>
+<link rel="stylesheet" href="theme.css">
+</head>
+<body>
+<header class="top">
+  <div>
+    <div class="eyebrow">enSights · סימולציה דגלי דוד</div>
+    <h1 id="custName">—</h1>
+    <div class="sub" id="custSub">—</div>
+  </div>
+  <div style="text-align:left">
+    <div class="sub" id="rangeInfo">—</div>
+    <div class="sub" style="margin-top:2px" id="vatInfo"></div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <!-- KPI cards -->
+  <div class="kpis" id="kpis"></div>
+
+  <!-- Controls -->
+  <div class="panel">
+    <div class="pbody controls">
+      <div class="cgroup">
+        <label>תצוגה</label>
+        <div class="segment" id="viewSeg"></div>
+      </div>
+      <div class="cgroup" id="granWrap">
+        <label>רזולוציית היום</label>
+        <div class="segment" id="granSeg"></div>
+      </div>
+      <div class="cgroup">
+        <label>מדד</label>
+        <div class="segment" id="metricSeg"></div>
+      </div>
+      <div class="cgroup">
+        <label>ניווט תקופה</label>
+        <div class="toolbar">
+          <button class="navbtn" id="navPrev" title="הקודם">◀</button>
+          <input type="date" id="anchorDate">
+          <button class="navbtn" id="navNext" title="הבא">▶</button>
+          <button class="navbtn" id="navLast" title="לתקופה העדכנית">אחרון</button>
+          <span id="navLabel" style="font-weight:800;font-size:13.5px;margin-inline-start:6px"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chart 1: flows -->
+  <div class="panel">
+    <div class="phead">
+      <h2>זרימות אנרגיה / הספק לאורך זמן</h2>
+      <div class="toolbar">
+        <label class="note" style="font-weight:700">סוג גרף:</label>
+        <div class="segment" id="chartTypeSeg"></div>
+      </div>
+    </div>
+    <div class="pbody">
+      <div class="serieschips" id="seriesChips"></div>
+      <div class="chartbox" style="margin-top:12px"><canvas id="flowChart"></canvas></div>
+      <div class="note" style="margin-top:10px">
+        <b>צריכה עצמית</b> = ייצור − יצוא (מחויב בתעו״ז). <b>סך עומס</b> = יבוא מהרשת + צריכה עצמית.
+      </div>
+    </div>
+  </div>
+
+  <div class="flex">
+    <!-- Chart 2: tariff breakdown -->
+    <div class="panel">
+      <div class="phead">
+        <h2>פילוח לפי תעריף תעו״ז</h2>
+        <div class="toolbar">
+          <select id="costQty" title="על איזו כמות מחשבים את התעו״ז">
+            <option value="load">סך עומס (יבוא + צריכה עצמית)</option>
+            <option value="imp">יבוא מהרשת בלבד</option>
+            <option value="self">צריכה עצמית בלבד</option>
+          </select>
+          <div class="segment" id="tariffUnitSeg"></div>
+        </div>
+      </div>
+      <div class="pbody">
+        <div class="chartbox short"><canvas id="tariffChart"></canvas></div>
+      </div>
+    </div>
+
+    <!-- Cost summary table -->
+    <div class="panel" style="flex:0 1 430px">
+      <div class="phead"><h2>סיכום עלות בטווח</h2>
+        <div class="segment" id="vatSeg"></div>
+      </div>
+      <div class="pbody">
+        <table class="summary" id="costTable"></table>
+        <div class="note" style="margin-top:10px" id="costFootnote"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== STORAGE / BATTERY ==================== -->
+  <div class="panel">
+    <div class="phead">
+      <h2>אגירה — ארביטראז׳ תעו״ז <span class="tag">חדש</span></h2>
+      <div class="note">טעינה בשעות השפל · פריקה בשעות הפסגה · ללא יצוא לרשת</div>
+    </div>
+    <div class="pbody">
+      <div class="controls" style="margin-bottom:6px">
+        <div class="cgroup"><label>מס׳ קבינטים</label><input type="number" id="bCab" min="0" max="50" step="1" value="1"></div>
+        <div class="cgroup"><label>קיבולת/קבינט (kWh)</label><input type="number" id="bCap" min="1" step="1" value="261"></div>
+        <div class="cgroup"><label>הספק AC/קבינט (kW)</label><input type="number" id="bAc" min="1" step="1" value="125"></div>
+        <div class="cgroup"><label>SOC מקס׳ (%)</label><input type="number" id="bMax" min="1" max="100" step="1" value="95"></div>
+        <div class="cgroup"><label>SOC מינ׳ (%)</label><input type="number" id="bMin" min="0" max="99" step="1" value="20"></div>
+        <div class="cgroup"><label>נצילות הלוך-חזור (%)</label><input type="number" id="bEff" min="50" max="100" step="1" value="90"></div>
+        <div class="cgroup"><label>&nbsp;</label><span class="note" id="bSpec"></span></div>
+      </div>
+
+      <div class="kpis" id="storeKpis" style="grid-template-columns:repeat(5,1fr)"></div>
+
+      <div class="flex">
+        <div class="panel" style="margin-bottom:0">
+          <div class="phead"><h2 style="font-size:14px">גרף טעינה (מהרשת בשפל)</h2></div>
+          <div class="pbody"><div class="chartbox short"><canvas id="chargeChart"></canvas></div></div>
+        </div>
+        <div class="panel" style="margin-bottom:0">
+          <div class="phead"><h2 style="font-size:14px">גרף פריקה (לצריכה בפסגה)</h2></div>
+          <div class="pbody"><div class="chartbox short"><canvas id="dischargeChart"></canvas></div></div>
+        </div>
+      </div>
+      <div class="note" style="margin-top:10px" id="storeFootnote"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="pbody note">
+      נתוני מונה ברזולוציית 15 דק׳ · מקור: יצוא חברת החשמל · מחירי תעו״ז מתח נמוך (01.07.2026) · עיצוב: מערכת enSights.
+      חגים מטופלים כשבתות וערביהם כימי ו׳. <span id="buildInfo"></span>
+    </div>
+  </div>
+</div>
+
+<script src="chart.umd.min.js"></script>
+<script src="meter_data.js"></script>
+<script src="tariff.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
