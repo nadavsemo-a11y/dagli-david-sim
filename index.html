@@ -115,10 +115,13 @@
         <div class="cgroup"><label>SOC מקס׳ (%)</label><input type="number" id="bMax" min="1" max="100" step="1" value="95"></div>
         <div class="cgroup"><label>SOC מינ׳ (%)</label><input type="number" id="bMin" min="0" max="99" step="1" value="20"></div>
         <div class="cgroup"><label>נצילות הלוך-חזור (%)</label><input type="number" id="bEff" min="50" max="100" step="1" value="90"></div>
+        <div class="cgroup"><label>עלות התקנה (₪/kWh)</label><input type="number" id="bCostKwh" min="0" step="1" value="190"></div>
+        <div class="cgroup"><label>עלות קבועה (₪)</label><input type="number" id="bCostFixed" min="0" step="1000" value="25000" style="width:96px"></div>
         <div class="cgroup"><label>&nbsp;</label><span class="note" id="bSpec"></span></div>
       </div>
 
       <div class="kpis" id="storeKpis" style="grid-template-columns:repeat(5,1fr)"></div>
+      <div class="kpis" id="storeCostKpis" style="grid-template-columns:repeat(3,1fr);margin-top:12px"></div>
       <div class="note" style="margin-top:10px" id="storeFootnote"></div>
     </div>
   </div>

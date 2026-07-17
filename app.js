@@ -73,10 +73,19 @@
     tariffUnit: "kwh",      // kwh | ils
     vat: "vat",             // vat | novat
     anchor: null,           // Date (UTC חצות) המייצג את התקופה הנוכחית
+    season: 1,              // עונה לתצוגת "יום ממוצע עונתי": 0=אביב 1=קיץ 2=סתיו 3=חורף
     res: "day", rStart: 0, rEnd: N - 1,   // נגזרים מ-view+anchor
     bat: { cab: 1, cap: 261, ac: 125, socMax: 95, socMin: 20, eff: 90 },  // אגירה
+    cost: { perKwh: 190, fixed: 25000 },  // עלות התקנה: ₪/kWh + קבוע
   };
-  const VIEW_RES = { day: () => state.dayGran, week: () => "day", month: () => "day", year: () => "month", multi: () => "year" };
+  // 4 עונות מטאורולוגיות (לתצוגה העונתית)
+  const SEASON4 = ["אביב", "קיץ", "סתיו", "חורף"];
+  const season4of = m => (m >= 3 && m <= 5) ? 0 : (m >= 6 && m <= 8) ? 1 : (m >= 9 && m <= 11) ? 2 : 3;
+  const slotSeason = new Uint8Array(N);
+  for (let i = 0; i < N; i++) slotSeason[i] = season4of(slotDate[i].getUTCMonth() + 1);
+  const VIEW_RES = { day: () => state.dayGran, week: () => "day", month: () => "day", year: () => "month", multi: () => "year",
+                     avgMonth: () => state.dayGran, avgSeason: () => state.dayGran };
+  const isAvgView = () => state.view === "avgMonth" || state.view === "avgSeason";
   const HE_DOW = ["ראשון","שני","שלישי","רביעי","חמישי","שישי","שבת"];
   const FIRST_DAY = new Date(Date.UTC(slotDate[0].getUTCFullYear(), slotDate[0].getUTCMonth(), slotDate[0].getUTCDate()));
   const LAST_DAY = new Date(Date.UTC(slotDate[N-1].getUTCFullYear(), slotDate[N-1].getUTCMonth(), slotDate[N-1].getUTCDate()));
@@ -94,6 +103,11 @@
   function bucketOf(i) {
     const t = slotDate[i];
     const Y = t.getUTCFullYear(), Mo = t.getUTCMonth(), Da = t.getUTCDate(), H = t.getUTCHours(), Mi = t.getUTCMinutes();
+    // תצוגות "יום ממוצע": קיבוץ לפי שעת-היום (מוצע על פני הימים)
+    if (isAvgView()) {
+      if (state.res === "hour") return { key: `${pad(H)}`, label: `${pad(H)}:00`, hours: 1, tod: H };
+      return { key: `${pad(H)}:${pad(Mi)}`, label: `${pad(H)}:${pad(Mi)}`, hours: SLOT_H, tod: H * 4 + Mi / 15 };
+    }
     switch (state.res) {
       case "q":     return { key: i, label: `${pad(H)}:${pad(Mi)}`, hours: SLOT_H };
       case "hour":  return { key: `${Y}-${pad(Mo)}-${pad(Da)}-${pad(H)}`, label: `${pad(H)}:00`, hours: 1 };
@@ -106,10 +120,16 @@
   }
 
   // ============================ אגרגציה ======================================
+  // טווח הסלוטים בתוקף כרגע. בתצוגה עונתית — כל הנתונים מסוננים לפי העונה הנבחרת.
+  function scope() {
+    if (state.view === "avgSeason") return { a: 0, b: N - 1, ok: i => slotSeason[i] === state.season };
+    return { a: Math.max(0, state.rStart), b: Math.min(N - 1, state.rEnd), ok: null };
+  }
   function aggregate() {
     const order = [], map = new Map();
-    const a = Math.max(0, state.rStart), b = Math.min(N - 1, state.rEnd);
+    const sc = scope(), a = sc.a, b = sc.b;
     for (let i = a; i <= b; i++) {
+      if (sc.ok && !sc.ok(i)) continue;
       const bk = bucketOf(i);
       let o = map.get(bk.key);
       if (!o) {
@@ -156,8 +176,11 @@
       // פריקה בפסגה: מקזז יבוא, מוגבל בהספק, בקיבולת שמישה
       let Edis = 0;
       for (let i = s0; i <= s1 && Edis < usable; i++) {
-        if (slotTar[i].per !== "פסגה") continue;
-        const dd = Math.min(imp[i] || 0, pMax15, usable - Edis);
+        if (slotTar[i].per !== "פסגה") continue;          // פריקה רק בפסגה
+        const impV = imp[i] > 0 ? imp[i] : 0;              // 0 כשאין יבוא/חוסר-נתונים
+        const loadV = load[i] > 0 ? load[i] : impV;
+        // פריקה ≤ עומס וגם ≤ יבוא (=עומס−PV) → מקבילה לעומס ולא פולטת אנרגיה אגורה לרשת
+        const dd = Math.min(impV, loadV, pMax15, usable - Edis);
         if (dd > 0) { discharge[i] = dd; Edis += dd; }
       }
       if (Edis <= 0) continue;
@@ -186,11 +209,16 @@
 
   // ערך סדרה לפי המדד הנבחר. NaN כשאין דגימות תקפות בבאקט (חוסר נתונים → פער בגרף).
   function metricVal(o, id) {
-    if (o.cnt && o.cnt[id] === 0) return NaN;
+    const c = o.cnt ? o.cnt[id] : o.n;
+    if (!c) return NaN;
+    // תצוגות "יום ממוצע": כל באקט = שעת-יום; מציגים ממוצע על פני הימים (vals/מספר-ימים).
+    if (isAvgView()) {
+      const perSlot = o.vals[id] / c;                // ממוצע אנרגיה בשעת-היום הזו
+      return state.metric === "kwh" ? perSlot : perSlot / SLOT_H;   // kWh או kW
+    }
     if (state.metric === "kwh") return o.vals[id];
     if (state.metric === "kwpeak") return o.peak[id];
-    const h = (o.cnt ? o.cnt[id] : o.n) * SLOT_H;    // שעות תקפות בלבד
-    return h > 0 ? o.vals[id] / h : NaN;             // kwavg
+    return o.vals[id] / (c * SLOT_H);                // kwavg — הספק ממוצע
   }
 
   // ============================ פורמט ========================================
@@ -248,39 +276,69 @@
     tariffChart = new Chart(document.getElementById("tariffChart"), cfg);
   }
 
-  // ---- אגירה: KPI כדאיות (הגרפים אוחדו לגרף הראשי כסדרות) ----
+  // ---- אגירה: KPI כדאיות + השוואת עלות עם/בלי אגירה (הגרפים אוחדו לגרף הראשי) ----
   function renderStore(agg) {
-    // חיסכון על הטווח הנראה
     const pf = state.vat === "vat" ? "priceVat" : "priceNoVat";
-    let tDis = 0, tChg = 0, gross = 0, chgCost = 0, peakOff = 0;
-    for (let i = agg.a; i <= agg.b; i++) {
+    const sc = scope();
+    let tDis = 0, tChg = 0, gross = 0, chgCost = 0;
+    let costNo = 0, costWith = 0;
+    for (let i = sc.a; i <= sc.b; i++) {
+      if (sc.ok && !sc.ok(i)) continue;
       const dd = discharge[i] || 0, cc = charge[i] || 0;
       tDis += dd; tChg += cc;
-      gross += dd * slotTar[i][pf];       // ערך אנרגיית הפסגה שקוזזה
-      chgCost += cc * slotTar[i][pf];     // עלות טעינה בשפל
-      if (dd > 0) peakOff += dd;
+      const price = slotTar[i][pf];
+      gross += dd * price;                 // ערך אנרגיית הפסגה שקוזזה
+      chgCost += cc * price;               // עלות טעינה בשפל
+      // עלות חשמל = עלות היבוא מהרשת בתעו״ז. עם אגירה: היבוא = imp+טעינה−פריקה.
+      const impV = Number.isFinite(imp[i]) ? imp[i] : 0;
+      costNo += impV * price;
+      costWith += Math.max(0, impV + cc - dd) * price;
     }
-    const net = gross - chgCost;
+    const net = gross - chgCost;           // חיסכון בתחום = costNo - costWith
+
+    // חיסכון שנתי + החזר השקעה — תמיד על כל הנתונים (שנה מייצגת), לא תלוי בתצוגה,
+    // אחרת עונה עם מרווח פסגה/שפל קטן תעוות את ההערכה.
+    let netFull = 0;
+    for (let i = 0; i < N; i++) netFull += ((discharge[i] || 0) - (charge[i] || 0)) * slotTar[i][pf];
+    const daysFull = N / 96;
+    const savePerYear = netFull * 365 / daysFull;
+
+    // עלות התקנה (CAPEX) + החזר השקעה
+    const b = state.bat, capTot = b.cab * b.cap;
+    const capex = state.cost.perKwh * capTot + state.cost.fixed;
+    const payback = savePerYear > 0 ? capex / savePerYear : Infinity;
+
+    // שורה 1 — אנרגיה + חיסכון בתחום
     const cards = [
       { lbl: "אנרגיה שנטענה", v: tChg, u: "kWh", c: cv("--s-charge") },
       { lbl: "אנרגיה שנפרקה", v: tDis, u: "kWh", c: cv("--s-discharge") },
-      { lbl: "ערך הפסגה שקוזז", v: gross, c: cv("--brand-accent"), ils: true },
-      { lbl: "עלות טעינה בשפל", v: chgCost, c: cv("--warning"), ils: true },
-      { lbl: "חיסכון נטו", v: net, c: cv("--brand"), ils: true },
+      { lbl: "עלות ללא אגירה", v: costNo, c: cv("--s-imp"), ils: true },
+      { lbl: "עלות עם אגירה", v: costWith, c: cv("--brand-accent"), ils: true },
+      { lbl: "חיסכון בתחום", v: net, c: cv("--brand"), ils: true },
     ];
     document.getElementById("storeKpis").innerHTML = cards.map(c => `
       <div class="kpi"><div class="lbl"><span class="dot" style="background:${c.c}"></span>${c.lbl}</div>
       <div class="val">${c.ils ? fmtILS(c.v) : nf0.format(Math.round(c.v))} <span class="unit">${c.ils?"":c.u}</span></div></div>`).join("");
 
-    const b = state.bat;
-    const capTot = b.cab * b.cap, usable = capTot * (b.socMax - b.socMin) / 100, pTot = b.cab * b.ac;
+    // שורה 2 — כדאיות השקעה
+    const paybackTxt = isFinite(payback) ? nf1.format(payback) + " שנים" : "—";
+    const cards2 = [
+      { lbl: "חיסכון שנתי (מוערך)", v: savePerYear, c: cv("--brand"), ils: true },
+      { lbl: "עלות התקנה (CAPEX)", v: capex, c: cv("--warning"), ils: true },
+      { lbl: "החזר השקעה", txt: paybackTxt, c: cv("--brand-dark") },
+    ];
+    document.getElementById("storeCostKpis").innerHTML = cards2.map(c => `
+      <div class="kpi"><div class="lbl"><span class="dot" style="background:${c.c}"></span>${c.lbl}</div>
+      <div class="val">${c.txt ? c.txt : fmtILS(c.v)}</div></div>`).join("");
+
+    const usable = capTot * (b.socMax - b.socMin) / 100, pTot = b.cab * b.ac;
     document.getElementById("bSpec").innerHTML =
       `סה״כ: <b>${nf0.format(capTot)} kWh</b> · שמיש <b>${nf0.format(usable)} kWh</b> · הספק <b>${nf0.format(pTot)} kW</b>`;
     const spread = tDis > 0 ? net / tDis : 0;
     document.getElementById("storeFootnote").innerHTML =
-      `מודל: פריקה בפסגה לקיזוז יבוא (ללא יצוא לרשת), טעינה בשפל · מחירים ${state.vat==="vat"?"כולל":"ללא"} מע״מ · ` +
-      `רווח ממוצע נטו: <b>${nf2.format(spread)} ₪/קוט״ש נפרק</b>. ` +
-      `בגרף הראשי הפעל את הסדרות <b>טעינת אגירה / פריקת אגירה / יבוא עם אגירה</b> כדי לבחון חזותית את הארביטראז'.`;
+      `עלות החשמל = עלות היבוא מהרשת בתעו״ז (${state.vat==="vat"?"כולל":"ללא"} מע״מ). "עם אגירה" = טעינה בשפל מוסיפה ליבוא, פריקה בפסגה מקזזת. ` +
+      `רווח ממוצע נטו: <b>${nf2.format(spread)} ₪/קוט״ש נפרק</b>. CAPEX = ${nf0.format(state.cost.perKwh)}₪×${nf0.format(capTot)}kWh + ${nf0.format(state.cost.fixed)}₪. ` +
+      `בגרף הראשי הפעל <b>טעינת/פריקת אגירה / יבוא עם אגירה</b> לבחינה חזותית.`;
   }
 
   function baseOpts(unit, stacked) {
@@ -309,17 +367,20 @@
     const tot = { pv:0, imp:0, exp:0, self:0, load:0 };
     let cost = 0;
     const priceField = state.vat === "vat" ? "priceVat" : "priceNoVat";
-    for (let i = agg.a; i <= agg.b; i++) {
+    const sc = scope();
+    for (let i = sc.a; i <= sc.b; i++) {
+      if (sc.ok && !sc.ok(i)) continue;
       tot.pv += pv[i]||0; tot.imp += imp[i]||0; tot.exp += exp[i]||0;
       tot.self += self[i]||0; tot.load += load[i]||0;
-      cost += (SERIES_ARR[state.costQty][i]||0) * slotTar[i][priceField];
+      const q = SERIES_ARR[state.costQty][i];
+      if (Number.isFinite(q)) cost += q * slotTar[i][priceField];
     }
     const cards = [
-      { lbl:"ייצור PV",     v:tot.pv,   u:"kWh", c:"#F4A200" },
-      { lbl:"יבוא מהרשת",   v:tot.imp,  u:"kWh", c:"#E23B4E" },
-      { lbl:"יצוא לרשת",    v:tot.exp,  u:"kWh", c:"#16A34A" },
-      { lbl:"צריכה עצמית",  v:tot.self, u:"kWh", c:"#2563EB" },
-      { lbl:"סך עומס",      v:tot.load, u:"kWh", c:"#0A1628" },
+      { lbl:"ייצור PV",     v:tot.pv,   u:"kWh", c:cv("--s-pv") },
+      { lbl:"יבוא מהרשת",   v:tot.imp,  u:"kWh", c:cv("--s-imp") },
+      { lbl:"יצוא לרשת",    v:tot.exp,  u:"kWh", c:cv("--s-exp") },
+      { lbl:"צריכה עצמית",  v:tot.self, u:"kWh", c:cv("--s-self") },
+      { lbl:"סך עומס",      v:tot.load, u:"kWh", c:cv("--s-load") },
       { lbl:"עלות תעו״ז",   v:cost,     u:"₪",   c:cv("--brand"), ils:true },
     ];
     document.getElementById("kpis").innerHTML = cards.map(c => `
@@ -333,9 +394,11 @@
     const priceIdx = state.vat === "vat" ? 1 : 0;
     const rows = {}; let totKwh = 0, totCost = 0;
     for (const b of T.BUCKETS) rows[b.key] = 0;
-    for (let i = agg.a; i <= agg.b; i++) {
-      const q = SERIES_ARR[state.costQty][i] || 0;
-      rows[slotTar[i].key] += q;
+    const sc = scope();
+    for (let i = sc.a; i <= sc.b; i++) {
+      if (sc.ok && !sc.ok(i)) continue;
+      const q = SERIES_ARR[state.costQty][i];
+      if (Number.isFinite(q)) rows[slotTar[i].key] += q;
     }
     let html = `<thead><tr><th>תעריף</th><th>אנרגיה</th><th>מחיר</th><th>עלות</th><th>%</th></tr></thead><tbody>`;
     for (const b of T.BUCKETS) {
@@ -376,6 +439,7 @@
   function buildControls() {
     seg("viewSeg", [
       {v:"day",t:"יום"},{v:"week",t:"שבוע"},{v:"month",t:"חודש"},{v:"year",t:"שנה"},{v:"multi",t:"רב-שנתי"},
+      {v:"avgMonth",t:"יום ממוצע · חודשי"},{v:"avgSeason",t:"יום ממוצע · עונתי"},
     ], state.view, v => { state.view = v; syncViewUI(); applyView(); });
 
     seg("granSeg", [{v:"q",t:"15 דק׳"},{v:"hour",t:"שעה"}], state.dayGran, v => { state.dayGran = v; applyView(); });
@@ -408,12 +472,21 @@
         if (!isNaN(v)) { state.bat[key] = v; simulateStorage(); refresh(); }
       };
     }
+    // בקרות עלות התקנה (לא משנות סימולציה — רק CAPEX/החזר)
+    const cmap = { bCostKwh:"perKwh", bCostFixed:"fixed" };
+    for (const [id, key] of Object.entries(cmap)) {
+      document.getElementById(id).onchange = e => {
+        const v = parseFloat(e.target.value);
+        if (!isNaN(v)) { state.cost[key] = v; refresh(); }
+      };
+    }
   }
 
   // הצגת/הסתרת בקרות לפי התצוגה
   function syncViewUI() {
-    document.getElementById("granWrap").style.display = state.view === "day" ? "" : "none";
-    document.getElementById("anchorDate").style.display = state.view === "multi" ? "none" : "";
+    const showGran = state.view === "day" || isAvgView();
+    document.getElementById("granWrap").style.display = showGran ? "" : "none";
+    document.getElementById("anchorDate").style.display = (state.view === "multi" || state.view === "avgSeason") ? "none" : "";
     const dis = state.view === "multi";
     ["navPrev","navNext","navLast"].forEach(id => document.getElementById(id).disabled = dis);
   }
@@ -445,22 +518,32 @@
     } else if (state.view === "year") {
       s = idxFromDate(Y, 1, 1); e = idxFromDate(Y, 12, 31) + 95;
       label = `שנת ${Y}`;
+    } else if (state.view === "avgMonth") {
+      // יום ממוצע על פני ימי החודש הנבחר
+      s = idxFromDate(Y, Mo+1, 1);
+      const nm = new Date(Date.UTC(Y, Mo+1, 1)); e = idxFromDate(nm.getUTCFullYear(), nm.getUTCMonth()+1, 1) - 1;
+      label = `יום ממוצע · ${HE_MON_FULL[Mo]} ${Y}`;
+    } else if (state.view === "avgSeason") {
+      // יום ממוצע על פני כל ימי העונה (בכל השנים) — הסינון ב-scope()
+      s = 0; e = N - 1;
+      label = `יום ממוצע · ${SEASON4[state.season]} (כל השנים)`;
     } else {  // multi
       s = 0; e = N - 1;
       label = `כל השנים · ${FIRST_DAY.getUTCFullYear()}–${LAST_DAY.getUTCFullYear()}`;
     }
     state.rStart = Math.max(0, s); state.rEnd = Math.min(N - 1, e);
     document.getElementById("navLabel").textContent = label;
-    if (state.view !== "multi") document.getElementById("anchorDate").value = a.toISOString().slice(0, 10);
+    if (state.view !== "multi" && state.view !== "avgSeason") document.getElementById("anchorDate").value = a.toISOString().slice(0, 10);
     refresh();
   }
 
   function shiftPeriod(dir) {
+    if (state.view === "avgSeason") { state.season = (state.season + dir + 4) % 4; applyView(); return; }
     if (state.view === "multi") return;
     const a = new Date(state.anchor);
     if (state.view === "day") a.setUTCDate(a.getUTCDate() + dir);
     else if (state.view === "week") a.setUTCDate(a.getUTCDate() + 7*dir);
-    else if (state.view === "month") a.setUTCMonth(a.getUTCMonth() + dir);
+    else if (state.view === "month" || state.view === "avgMonth") a.setUTCMonth(a.getUTCMonth() + dir);
     else if (state.view === "year") a.setUTCFullYear(a.getUTCFullYear() + dir);
     state.anchor = clampDay(a);
     applyView();
