@@ -102,7 +102,14 @@
     res: "day", rStart: 0, rEnd: N - 1,   // נגזרים מ-view+anchor
     bat: { cab: 1, cap: 261, ac: 125, socMax: 95, socMin: 20, eff: 90, smart: true },  // אגירה (smart=רק כשכדאי)
     cost: { perKwh: 190, fixed: 25000 },  // עלות התקנה: ₪/kWh + קבוע
+    stackShow: { self: true, discharge: true, grid: true },  // מקורות מוצגים במצב מוערם
   };
+  // מקורות פירוק העומס (מצב מוערם). מקור שמוסר → נבלע ב"עומס" הכללי (נשמר הסכום).
+  const STACK_SRC = [
+    { id: "self",      name: "צריכה עצמית", color: cv("--s-self") },
+    { id: "discharge", name: "פריקה מאגירה", color: cv("--s-discharge") },
+    { id: "grid",      name: "יבוא מהרשת",   color: cv("--s-imp") },
+  ];
   // 4 עונות מטאורולוגיות (לתצוגה העונתית)
   const SEASON4 = ["אביב", "קיץ", "סתיו", "חורף"];
   const season4of = m => (m >= 3 && m <= 5) ? 0 : (m >= 6 && m <= 8) ? 1 : (m >= 9 && m <= 11) ? 2 : 3;
@@ -292,22 +299,31 @@
     const stackMode = state.chartType === "stack";
     let datasets, chartKind, stackedOpt;
     if (stackMode) {
-      // פירוק העומס למקורותיו: צריכה עצמית (PV) + פריקה מאגירה + יבוא מהרשת = סך עומס
-      const slf = [], dis = [], grd = [];
+      // פירוק העומס למקורותיו (צריכה עצמית + פריקה + יבוא). מקור מוסתר נבלע ב"עומס" הכללי,
+      // כך שהסכום תמיד = סך העומס.
+      const src = {}; STACK_SRC.forEach(s => src[s.id] = []);
+      const generic = [];   // "עומס" — סכום המקורות המוסתרים
       for (const k of agg.order) {
         const o = agg.map.get(k);
         const L = metricVal(o, "load"), S = metricVal(o, "self"), D = metricVal(o, "discharge");
-        if (!Number.isFinite(L)) { slf.push(NaN); dis.push(NaN); grd.push(NaN); continue; }
+        if (!Number.isFinite(L)) { STACK_SRC.forEach(s => src[s.id].push(NaN)); generic.push(NaN); continue; }
         const s = Number.isFinite(S) ? Math.max(0, S) : 0;
         const d = Number.isFinite(D) ? Math.max(0, D) : 0;
-        slf.push(+s.toFixed(3)); dis.push(+d.toFixed(3));
-        grd.push(+Math.max(0, L - s - d).toFixed(3));   // יבוא תפעולי = עומס − עצמי − פריקה
+        const g = Math.max(0, L - s - d);                 // יבוא תפעולי = עומס − עצמי − פריקה
+        const vals = { self: s, discharge: d, grid: g };
+        let hidden = 0;
+        for (const sc of STACK_SRC) {
+          if (state.stackShow[sc.id]) src[sc.id].push(+vals[sc.id].toFixed(3));
+          else { src[sc.id].push(0); hidden += vals[sc.id]; }
+        }
+        generic.push(+hidden.toFixed(3));
       }
-      datasets = [
-        { label: "צריכה עצמית", data: slf, backgroundColor: cv("--s-self"),      borderWidth: 0, stack: "load" },
-        { label: "פריקה מאגירה", data: dis, backgroundColor: cv("--s-discharge"), borderWidth: 0, stack: "load" },
-        { label: "יבוא מהרשת",   data: grd, backgroundColor: cv("--s-imp"),       borderWidth: 0, stack: "load" },
-      ];
+      datasets = [];
+      if (generic.some(v => v > 0))   // דלי "עומס" רק אם יש מקור מוסתר
+        datasets.push({ label: "עומס", data: generic, backgroundColor: cv("--s-load"), borderWidth: 0, stack: "load" });
+      for (const sc of STACK_SRC)
+        if (state.stackShow[sc.id])
+          datasets.push({ label: sc.name, data: src[sc.id], backgroundColor: sc.color, borderWidth: 0, stack: "load" });
       chartKind = "bar"; stackedOpt = true;
     } else {
       datasets = SERIES.filter(s => s.on).map(s => {
@@ -551,7 +567,7 @@
       {v:"kwh",t:"אנרגיה kWh"},{v:"kwavg",t:"הספק ממוצע kW"},{v:"kwpeak",t:"הספק שיא kW"},
     ], state.metric, v => { state.metric = v; refreshFlow(); });
 
-    seg("chartTypeSeg", [{v:"stack",t:"מוערם (מקורות עומס)"},{v:"bar",t:"עמודות"},{v:"line",t:"קו"}], state.chartType, v => { state.chartType = v; refreshFlow(); });
+    seg("chartTypeSeg", [{v:"stack",t:"מוערם (מקורות עומס)"},{v:"bar",t:"עמודות"},{v:"line",t:"קו"}], state.chartType, v => { state.chartType = v; renderSeriesChips(); refreshFlow(); });
 
     seg("tariffUnitSeg", [{v:"kwh",t:"kWh"},{v:"ils",t:"₪"}], state.tariffUnit, v => { state.tariffUnit = v; refreshTariff(); });
     seg("vatSeg", [{v:"vat",t:"כולל מע״מ"},{v:"novat",t:"ללא מע״מ"}], state.vat, v => { state.vat = v; refresh(); });
@@ -715,6 +731,23 @@
 
   function renderSeriesChips() {
     const el = document.getElementById("seriesChips");
+    if (state.chartType === "stack") {
+      // מצב מוערם: צ'יפים למקורות העומס. הסרת מקור → נבלע ב"עומס" הכללי.
+      el.innerHTML = STACK_SRC.map(s => {
+        const on = state.stackShow[s.id];
+        return `<span class="chip ${on?"on":"off"}" data-src="${s.id}" style="${on?`color:${s.color}`:""}">
+          <span class="dot" style="background:${s.color}"></span>${s.name}</span>`;
+      }).join("");
+      el.querySelectorAll(".chip").forEach(ch => ch.onclick = () => {
+        const id = ch.dataset.src; state.stackShow[id] = !state.stackShow[id];
+        const on = state.stackShow[id];
+        const col = STACK_SRC.find(x => x.id === id).color;
+        ch.classList.toggle("on", on); ch.classList.toggle("off", !on);
+        ch.style.color = on ? col : "";
+        refreshFlow();
+      });
+      return;
+    }
     el.innerHTML = SERIES.map(s => `
       <span class="chip ${s.on?"on":"off"}" data-id="${s.id}" style="${s.on?`color:${s.color}`:""}">
         <span class="dot" style="background:${s.color}"></span>${s.name}</span>`).join("");
