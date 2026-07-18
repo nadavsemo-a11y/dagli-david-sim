@@ -18,16 +18,17 @@
       const cfg = chart.options.plugins && chart.options.plugins.tariffBg;
       if (!cfg || !cfg.bands || !cfg.bands.length) return;
       const { ctx, chartArea: ca, scales: { x } } = chart;
-      const bands = cfg.bands, n = bands.length;
+      const bands = cfg.bands, out = cfg.outageBands, n = bands.length;
       const step = n > 1 ? (x.getPixelForValue(1) - x.getPixelForValue(0)) : (ca.right - ca.left);
       ctx.save();
       for (let i = 0; i < n; i++) {
         const b = bands[i];
-        if (b == null) continue;
+        const isOut = out && out[i];
+        if (b == null && !isOut) continue;
         const c = x.getPixelForValue(i);
         let left = Math.max(ca.left, c - step / 2), right = Math.min(ca.right, c + step / 2);
         if (right <= left) continue;
-        ctx.fillStyle = b ? cfg.peakColor : cfg.offColor;
+        ctx.fillStyle = isOut ? cfg.outageColor : (b ? cfg.peakColor : cfg.offColor);   // הפסקה גוברת
         ctx.fillRect(left, ca.top, right - left, ca.bottom - ca.top);
       }
       ctx.restore();
@@ -107,6 +108,22 @@
   const season4of = m => (m >= 3 && m <= 5) ? 0 : (m >= 6 && m <= 8) ? 1 : (m >= 9 && m <= 11) ? 2 : 3;
   const slotSeason = new Uint8Array(N);
   for (let i = 0; i < N; i++) slotSeason[i] = season4of(slotDate[i].getUTCMonth() + 1);
+
+  // ---- זיהוי הפסקות חשמל: כל המונים = 0 (אין זרימת אנרגיה כלל), לא ביום חוסר-נתונים ----
+  // (load==0 לבדו נותן שגויים בצהריים בגלל ארטיפקט יצוא>ייצור; לכן דורשים imp=pv=exp=0)
+  const isOutage = new Uint8Array(N);
+  const OUTAGES = [];   // [{s,e}] אינדקסי סלוט התחלה/סוף (כולל)
+  {
+    let cur = null;
+    for (let i = 0; i < N; i++) {
+      const gap = GAP.has((i / 96) | 0);
+      const outage = !gap && (imp[i] || 0) === 0 && (pv[i] || 0) === 0 && (exp[i] || 0) === 0;
+      isOutage[i] = outage ? 1 : 0;
+      if (outage) { if (!cur) cur = { s: i, e: i }; else cur.e = i; }
+      else if (cur) { OUTAGES.push(cur); cur = null; }
+    }
+    if (cur) OUTAGES.push(cur);
+  }
   const VIEW_RES = { day: () => state.dayGran, week: () => "day", month: () => "day", year: () => "month", multi: () => "year",
                      avgMonth: () => state.dayGran, avgSeason: () => state.dayGran };
   const isAvgView = () => state.view === "avgMonth" || state.view === "avgSeason";
@@ -157,12 +174,13 @@
       const bk = bucketOf(i);
       let o = map.get(bk.key);
       if (!o) {
-        o = { label: bk.label, hours: 0, n: 0, vals: {}, peak: {}, cnt: {}, tar: {}, peakN: 0, offN: 0 };
+        o = { label: bk.label, hours: 0, n: 0, vals: {}, peak: {}, cnt: {}, tar: {}, peakN: 0, offN: 0, outN: 0 };
         for (const s of SERIES) { o.vals[s.id] = 0; o.peak[s.id] = 0; o.cnt[s.id] = 0; }
         map.set(bk.key, o); order.push(bk.key);
       }
       o.n++; o.hours += SLOT_H;
       if (slotTar[i].per === "פסגה") o.peakN++; else o.offN++;
+      if (isOutage[i]) o.outN++;
       for (const s of SERIES) {
         const v = SERIES_ARR[s.id][i];
         if (!Number.isFinite(v)) continue;     // סלוט חוסר-נתונים — מדלגים
@@ -287,7 +305,13 @@
     // רקע תעו״ז — רק כשציר-ה-X הוא שעת-יום (תצוגת יום / יום ממוצע)
     if (state.view === "day" || isAvgView()) {
       const bands = agg.order.map(k => { const o = agg.map.get(k); return o.peakN >= o.offN ? (o.peakN > 0) : false; });
-      cfg.options.plugins.tariffBg = { bands, peakColor: cv("--bg-peak"), offColor: cv("--bg-off") };
+      const p = { bands, peakColor: cv("--bg-peak"), offColor: cv("--bg-off") };
+      // רקע הפסקת חשמל (אפור) — רק בתצוגת יום
+      if (state.view === "day") {
+        p.outageBands = agg.order.map(k => agg.map.get(k).outN > 0);
+        p.outageColor = cv("--bg-outage");
+      }
+      cfg.options.plugins.tariffBg = p;
     }
     if (flowChart) flowChart.destroy();
     flowChart = new Chart(document.getElementById("flowChart"), cfg);
@@ -618,7 +642,41 @@
     renderTariff(lastAgg);
     renderCostTable(lastAgg);
     renderStore(lastAgg);
+    renderOutages();
     updateRangeInfo();
+  }
+
+  // ---- רשימת הפסקות חשמל בתצוגה הנוכחית (לחיצה → מעבר ליום האירוע) ----
+  function renderOutages() {
+    const sc = scope();
+    const list = OUTAGES.filter(o => o.s >= sc.a && o.s <= sc.b && (!sc.ok || sc.ok(o.s)));
+    const el = document.getElementById("outageList"), sum = document.getElementById("outageSummary");
+    if (!list.length) {
+      el.innerHTML = `<div class="note">לא זוהו הפסקות חשמל בתצוגה זו.</div>`;
+      sum.textContent = "";
+      return;
+    }
+    let totH = 0;
+    el.innerHTML = list.map(o => {
+      const a = slotDate[o.s], rec = new Date(BASE + (o.e + 1) * slotMs);
+      const hrs = (o.e - o.s + 1) * SLOT_H; totH += hrs;
+      const dstr = `${pad(a.getUTCDate())}/${pad(a.getUTCMonth()+1)}/${a.getUTCFullYear()}`;
+      const t1 = `${pad(a.getUTCHours())}:${pad(a.getUTCMinutes())}`;
+      const t2 = `${pad(rec.getUTCHours())}:${pad(rec.getUTCMinutes())}`;
+      return `<a class="outage-item" data-s="${o.s}"><span class="arrow">◀</span>` +
+        `<span>יום ${HE_DOW[a.getUTCDay()]} · <b>${dstr}</b></span>` +
+        `<span>${t1}–${t2}</span><span class="dur">${nf2.format(hrs)} ש׳</span></a>`;
+    }).join("");
+    sum.innerHTML = `<b>${list.length}</b> הפסקות · סה״כ <b>${nf1.format(totH)} שעות</b>`;
+    el.querySelectorAll(".outage-item").forEach(it => it.onclick = () => goToDay(+it.dataset.s));
+  }
+  function goToDay(slotIdx) {
+    const t = slotDate[slotIdx];
+    state.view = "day";
+    state.anchor = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate()));
+    document.querySelectorAll("#viewSeg button").forEach(bt => bt.classList.toggle("on", bt.dataset.v === "day"));
+    syncViewUI();
+    applyView();
   }
   function refreshFlow() { if (!lastAgg) lastAgg = aggregate(); renderFlow(lastAgg); }
   function refreshTariff() { if (!lastAgg) lastAgg = aggregate(); renderTariff(lastAgg); }

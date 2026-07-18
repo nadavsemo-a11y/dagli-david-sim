@@ -71,6 +71,18 @@
     </div>
   </div>
 
+  <!-- ==================== POWER OUTAGES ==================== -->
+  <div class="panel">
+    <div class="phead">
+      <h2>הפסקות חשמל <span class="tag" style="background:var(--bg-outage);color:#fff">אפור בגרף</span></h2>
+      <div class="note" id="outageSummary"></div>
+    </div>
+    <div class="pbody">
+      <div id="outageList" style="display:flex;flex-direction:column;gap:6px;max-height:280px;overflow:auto"></div>
+      <div class="note" style="margin-top:8px">זוהה כאשר כל המונים = 0 (אין זרימת אנרגיה). לחיצה על שורה מעבירה לתצוגת אותו יום.</div>
+    </div>
+  </div>
+
   <div class="flex">
     <!-- Chart 2: tariff breakdown -->
     <div class="panel">

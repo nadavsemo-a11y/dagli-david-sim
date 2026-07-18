@@ -43,6 +43,7 @@
   /* --- רקע הגרף לפי תקופת תעו״ז (פסגה=אדום, שפל=ירוק; שקיפות ~5%) --- */
   --bg-peak: rgba(237, 28, 36, 0.05);
   --bg-off:  rgba(51, 174, 154, 0.05);
+  --bg-outage: rgba(90, 100, 110, 0.30);   /* הפסקת חשמל — אפור בולט */
 }
 
 * { box-sizing: border-box; }
@@ -103,6 +104,11 @@ table.summary tr.total td { border-top: 2px solid var(--border2); font-weight: 8
 .flex { display: flex; gap: 16px; flex-wrap: wrap; }
 .flex > .panel { flex: 1; min-width: 340px; }
 .tag { display:inline-block; background: var(--brand-accent); color: #06302b; font-weight: 800; font-size: 11px; padding: 2px 9px; border-radius: 20px; letter-spacing:.3px; }
+.outage-item { display:flex; align-items:center; gap:12px; border:1px solid var(--border2); border-inline-start:4px solid var(--gray); border-radius:9px; padding:9px 13px; font-size:13px; cursor:pointer; background:#fff; color:var(--ink); text-decoration:none; transition:background .12s; }
+.outage-item:hover { background:#eef2f2; border-inline-start-color:var(--danger); }
+.outage-item b { color: var(--brand-dark); }
+.outage-item .dur { margin-inline-start:auto; font-weight:800; color:var(--danger); font-variant-numeric:tabular-nums; }
+.outage-item .arrow { color:var(--gray); font-weight:700; }
 
 @media (max-width: 1100px) { .kpis { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 560px) { .kpis { grid-template-columns: repeat(2, 1fr); } }
