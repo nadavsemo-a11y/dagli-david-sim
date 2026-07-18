@@ -93,7 +93,7 @@
     view: "month",          // day | week | month | year | multi
     dayGran: "q",           // q | hour   (רק בתצוגת יום)
     metric: "kwh",          // kwh | kwavg | kwpeak
-    chartType: "bar",       // line | bar
+    chartType: "stack",     // stack | bar | line  (מוערם = ברירת מחדל)
     costQty: "load",
     tariffUnit: "kwh",      // kwh | ils
     vat: "vat",             // vat | novat
@@ -292,15 +292,21 @@
     const stackMode = state.chartType === "stack";
     let datasets, chartKind, stackedOpt;
     if (stackMode) {
-      // פירוק העומס: פריקה מאגירה (תחתית) + יתרת העומס (מעל) = סך עומס
-      const dis = agg.order.map(k => { const v = metricVal(agg.map.get(k), "discharge"); return Number.isFinite(v) ? +v.toFixed(3) : 0; });
-      const rem = agg.order.map(k => {
-        const o = agg.map.get(k), L = metricVal(o, "load"), D = metricVal(o, "discharge");
-        return Number.isFinite(L) ? +Math.max(0, L - (Number.isFinite(D) ? D : 0)).toFixed(3) : NaN;
-      });
+      // פירוק העומס למקורותיו: צריכה עצמית (PV) + פריקה מאגירה + יבוא מהרשת = סך עומס
+      const slf = [], dis = [], grd = [];
+      for (const k of agg.order) {
+        const o = agg.map.get(k);
+        const L = metricVal(o, "load"), S = metricVal(o, "self"), D = metricVal(o, "discharge");
+        if (!Number.isFinite(L)) { slf.push(NaN); dis.push(NaN); grd.push(NaN); continue; }
+        const s = Number.isFinite(S) ? Math.max(0, S) : 0;
+        const d = Number.isFinite(D) ? Math.max(0, D) : 0;
+        slf.push(+s.toFixed(3)); dis.push(+d.toFixed(3));
+        grd.push(+Math.max(0, L - s - d).toFixed(3));   // יבוא תפעולי = עומס − עצמי − פריקה
+      }
       datasets = [
+        { label: "צריכה עצמית", data: slf, backgroundColor: cv("--s-self"),      borderWidth: 0, stack: "load" },
         { label: "פריקה מאגירה", data: dis, backgroundColor: cv("--s-discharge"), borderWidth: 0, stack: "load" },
-        { label: "עומס (מלבד אגירה)", data: rem, backgroundColor: cv("--s-load"), borderWidth: 0, stack: "load" },
+        { label: "יבוא מהרשת",   data: grd, backgroundColor: cv("--s-imp"),       borderWidth: 0, stack: "load" },
       ];
       chartKind = "bar"; stackedOpt = true;
     } else {
@@ -545,7 +551,7 @@
       {v:"kwh",t:"אנרגיה kWh"},{v:"kwavg",t:"הספק ממוצע kW"},{v:"kwpeak",t:"הספק שיא kW"},
     ], state.metric, v => { state.metric = v; refreshFlow(); });
 
-    seg("chartTypeSeg", [{v:"bar",t:"עמודות"},{v:"line",t:"קו"},{v:"stack",t:"מוערם (עומס+פריקה)"}], state.chartType, v => { state.chartType = v; refreshFlow(); });
+    seg("chartTypeSeg", [{v:"stack",t:"מוערם (מקורות עומס)"},{v:"bar",t:"עמודות"},{v:"line",t:"קו"}], state.chartType, v => { state.chartType = v; refreshFlow(); });
 
     seg("tariffUnitSeg", [{v:"kwh",t:"kWh"},{v:"ils",t:"₪"}], state.tariffUnit, v => { state.tariffUnit = v; refreshTariff(); });
     seg("vatSeg", [{v:"vat",t:"כולל מע״מ"},{v:"novat",t:"ללא מע״מ"}], state.vat, v => { state.vat = v; refresh(); });
