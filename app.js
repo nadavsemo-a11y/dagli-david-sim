@@ -289,18 +289,35 @@
   function renderFlow(agg) {
     const labels = agg.order.map(k => agg.map.get(k).label);
     const unit = metricUnit();
-    const datasets = SERIES.filter(s => s.on).map(s => {
-      const data = agg.order.map(k => +metricVal(agg.map.get(k), s.id).toFixed(3));
-      return {
-        label: s.name, data, borderColor: s.color, backgroundColor: s.color + (state.chartType==="bar"?"CC":"22"),
-        borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: .18, fill: state.chartType === "line" ? false : true,
-        borderDash: s.dash ? [6, 4] : undefined,
-      };
-    });
+    const stackMode = state.chartType === "stack";
+    let datasets, chartKind, stackedOpt;
+    if (stackMode) {
+      // פירוק העומס: פריקה מאגירה (תחתית) + יתרת העומס (מעל) = סך עומס
+      const dis = agg.order.map(k => { const v = metricVal(agg.map.get(k), "discharge"); return Number.isFinite(v) ? +v.toFixed(3) : 0; });
+      const rem = agg.order.map(k => {
+        const o = agg.map.get(k), L = metricVal(o, "load"), D = metricVal(o, "discharge");
+        return Number.isFinite(L) ? +Math.max(0, L - (Number.isFinite(D) ? D : 0)).toFixed(3) : NaN;
+      });
+      datasets = [
+        { label: "פריקה מאגירה", data: dis, backgroundColor: cv("--s-discharge"), borderWidth: 0, stack: "load" },
+        { label: "עומס (מלבד אגירה)", data: rem, backgroundColor: cv("--s-load"), borderWidth: 0, stack: "load" },
+      ];
+      chartKind = "bar"; stackedOpt = true;
+    } else {
+      datasets = SERIES.filter(s => s.on).map(s => {
+        const data = agg.order.map(k => +metricVal(agg.map.get(k), s.id).toFixed(3));
+        return {
+          label: s.name, data, borderColor: s.color, backgroundColor: s.color + (state.chartType==="bar"?"CC":"22"),
+          borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: .18, fill: state.chartType === "line" ? false : true,
+          borderDash: s.dash ? [6, 4] : undefined,
+        };
+      });
+      chartKind = state.chartType; stackedOpt = false;
+    }
     const cfg = {
-      type: state.chartType,
+      type: chartKind,
       data: { labels, datasets },
-      options: baseOpts(unit, false),
+      options: baseOpts(unit, stackedOpt),
     };
     // רקע תעו״ז — רק כשציר-ה-X הוא שעת-יום (תצוגת יום / יום ממוצע)
     if (state.view === "day" || isAvgView()) {
@@ -528,7 +545,7 @@
       {v:"kwh",t:"אנרגיה kWh"},{v:"kwavg",t:"הספק ממוצע kW"},{v:"kwpeak",t:"הספק שיא kW"},
     ], state.metric, v => { state.metric = v; refreshFlow(); });
 
-    seg("chartTypeSeg", [{v:"bar",t:"עמודות"},{v:"line",t:"קו"}], state.chartType, v => { state.chartType = v; refreshFlow(); });
+    seg("chartTypeSeg", [{v:"bar",t:"עמודות"},{v:"line",t:"קו"},{v:"stack",t:"מוערם (עומס+פריקה)"}], state.chartType, v => { state.chartType = v; refreshFlow(); });
 
     seg("tariffUnitSeg", [{v:"kwh",t:"kWh"},{v:"ils",t:"₪"}], state.tariffUnit, v => { state.tariffUnit = v; refreshTariff(); });
     seg("vatSeg", [{v:"vat",t:"כולל מע״מ"},{v:"novat",t:"ללא מע״מ"}], state.vat, v => { state.vat = v; refresh(); });
