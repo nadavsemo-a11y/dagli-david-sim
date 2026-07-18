@@ -396,15 +396,18 @@
 
     // חיסכון שנתי + החזר השקעה — תמיד על כל הנתונים (שנה מייצגת), לא תלוי בתצוגה,
     // אחרת עונה עם מרווח פסגה/שפל קטן תעוות את ההערכה.
-    let netFull = 0;
-    for (let i = 0; i < N; i++) netFull += ((discharge[i] || 0) - (charge[i] || 0)) * slotTar[i][pf];
+    let netFull = 0, disFull = 0;
+    for (let i = 0; i < N; i++) { const dd = discharge[i] || 0; netFull += (dd - (charge[i] || 0)) * slotTar[i][pf]; disFull += dd; }
     const daysFull = N / 96;
     const savePerYear = netFull * 365 / daysFull;
 
     // עלות התקנה (CAPEX) + החזר השקעה
     const b = state.bat, capTot = b.cab * b.cap;
+    const usableCap = capTot * (b.socMax - b.socMin) / 100;
     const capex = state.cost.perKwh * capTot + state.cost.fixed;
     const payback = savePerYear > 0 ? capex / savePerYear : Infinity;
+    // מחזורים שקולים לשנה = תפוקת פריקה שנתית / קיבולת שמישה
+    const cyclesPerYear = usableCap > 0 ? (disFull * 365 / daysFull) / usableCap : 0;
 
     // שורה 1 — פירוק אנרגיה וכלכלה (קוט״ש + ₪), בתחום המוצג
     const dual = (lbl, kwh, ils, c) => `
@@ -429,6 +432,7 @@
       { lbl: "חיסכון שנתי (מוערך)", v: savePerYear, c: cv("--brand"), ils: true },
       { lbl: "עלות התקנה (CAPEX)", v: capex, c: cv("--warning"), ils: true },
       { lbl: "החזר השקעה", txt: paybackTxt, c: cv("--brand-dark") },
+      { lbl: "מחזורי טעינה לשנה", txt: nf0.format(Math.round(cyclesPerYear)) + " מחזורים", c: cv("--s-charge") },
     ];
     document.getElementById("storeCostKpis").innerHTML = cards2.map(c => `
       <div class="kpi"><div class="lbl"><span class="dot" style="background:${c.c}"></span>${c.lbl}</div>
