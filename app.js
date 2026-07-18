@@ -105,7 +105,7 @@
   };
   // בתצוגת עמודות: "סך עומס" מצויר כהשלמה מעל רכיבי-העומס המוצגים (צריכה עצמית / פריקה),
   // כך שהעמודה תמיד מגיעה לגובה סך העומס. הסתרת רכיב → העומס תופס את מקומו (עד Y=0).
-  const LOAD_COMP = ["self", "discharge"];
+  const LOAD_COMP = ["discharge", "self"];   // סדר עדיפות בערימה (פריקה מכסה עומס קודם)
   // 4 עונות מטאורולוגיות (לתצוגה העונתית)
   const SEASON4 = ["אביב", "קיץ", "סתיו", "חורף"];
   const season4of = m => (m >= 3 && m <= 5) ? 0 : (m >= 6 && m <= 8) ? 1 : (m >= 9 && m <= 11) ? 2 : 3;
@@ -234,10 +234,9 @@
       let Edis = 0;
       for (let i = s0; i <= s1 && Edis < usable; i++) {
         if (slotTar[i].per !== "פסגה") continue;          // פריקה רק בפסגה
-        const impV = imp[i] > 0 ? imp[i] : 0;              // 0 כשאין יבוא/חוסר-נתונים
-        const loadV = load[i] > 0 ? load[i] : impV;
-        // פריקה ≤ עומס וגם ≤ יבוא (=עומס−PV) → מקבילה לעומס ולא פולטת אנרגיה אגורה לרשת
-        const dd = Math.min(impV, loadV, pMax15, usable - Edis);
+        const loadV = load[i] > 0 ? load[i] : 0;          // 0 בחוסר-נתונים/ללא עומס
+        // פריקה מכסה את מלוא העומס, עד הספק ה-AC של הקבינטים והאנרגיה הזמינה
+        const dd = Math.min(loadV, pMax15, usable - Edis);
         if (dd > 0) { discharge[i] = dd; Edis += dd; }
       }
       if (Edis <= 0) continue;
@@ -306,20 +305,27 @@
       // ו"סך עומס" כהשלמה מעליהם (=עומס − רכיבים מוצגים). הסתרת רכיב → העומס גדל.
       const shown = SERIES.filter(s => s.on);
       const shownComp = LOAD_COMP.filter(id => shown.some(s => s.id === id));
-      datasets = [];
-      for (const id of shownComp) {                              // בסיס הערימה
-        const s = SERIES.find(x => x.id === id);
-        datasets.push({ label: s.name, data: arr(id), backgroundColor: s.color, borderWidth: 0, stack: "L" });
-      }
-      if (shown.some(s => s.id === "load")) {                    // השלמה: עומס − רכיבים מוצגים
-        const data = agg.order.map(k => {
-          const o = agg.map.get(k), L = metricVal(o, "load");
-          if (!Number.isFinite(L)) return NaN;
-          let c = 0; for (const id of shownComp) { const v = metricVal(o, id); if (Number.isFinite(v)) c += Math.max(0, v); }
-          return +Math.max(0, L - c).toFixed(3);
+      const loadShown = shown.some(s => s.id === "load");
+      // חיתוך מצטבר לגובה העומס: כל רכיב מוגבל ליתרת העומס, וה"עומס" משלים — לעולם לא חורג.
+      const compData = shownComp.map(() => []);
+      const compl = [];
+      for (const k of agg.order) {
+        const o = agg.map.get(k), L = metricVal(o, "load");
+        if (!Number.isFinite(L)) { compData.forEach(a => a.push(NaN)); compl.push(NaN); continue; }
+        let rem = L;
+        shownComp.forEach((id, j) => {
+          let v = metricVal(o, id); v = Number.isFinite(v) ? Math.min(Math.max(0, v), rem) : 0;
+          compData[j].push(+v.toFixed(3)); rem -= v;
         });
-        datasets.push({ label: "סך עומס", data, backgroundColor: cv("--s-load"), borderWidth: 0, stack: "L" });
+        compl.push(+Math.max(0, rem).toFixed(3));
       }
+      datasets = [];
+      shownComp.forEach((id, j) => {
+        const s = SERIES.find(x => x.id === id);
+        datasets.push({ label: s.name, data: compData[j], backgroundColor: s.color, borderWidth: 0, stack: "L" });
+      });
+      if (loadShown)
+        datasets.push({ label: "סך עומס", data: compl, backgroundColor: cv("--s-load"), borderWidth: 0, stack: "L" });
       // שאר הסדרות (PV/יצוא/יבוא...) — כל אחת בערימה נפרדת (עמודה לצד)
       for (const s of shown)
         if (s.id !== "load" && !LOAD_COMP.includes(s.id))
@@ -374,7 +380,7 @@
   function renderStore(agg) {
     const pf = state.vat === "vat" ? "priceVat" : "priceNoVat";
     const sc = scope();
-    let tImp = 0, tDis = 0, tChg = 0, gross = 0, chgCost = 0, opIls = 0;
+    let tImp = 0, tDis = 0, tChg = 0, gross = 0, chgCost = 0, opIls = 0, opKwh = 0;
     let costNo = 0, costWith = 0;
     for (let i = sc.a; i <= sc.b; i++) {
       if (sc.ok && !sc.ok(i)) continue;
@@ -387,27 +393,30 @@
       tImp += impV;
       costNo += impV * price;              // עלות היבוא ללא אגירה
       costWith += Math.max(0, impV + cc - dd) * price;   // עלות היבוא עם אגירה
+      opKwh += Math.max(0, impV - dd);                   // יבוא תפעולי (לא-שלילי)
       opIls += Math.max(0, impV - dd) * price;           // עלות תפעול מהרשת (בלי טעינה)
     }
-    const net = gross - chgCost;           // הפרש מחיר = חיסכון בתחום = costNo - costWith
-    const opKwh = tImp - tDis;             // צריכת תפעול מהרשת (בלי טעינה) = יבוא − פריקה
+    const net = costNo - costWith;         // חיסכון בתחום = הפרש עלות החשמל (יבוא) עם/בלי אגירה
     const lossKwh = tChg - tDis;           // הפסד המרה (נצילות)
     const lossIls = tChg > 0 ? lossKwh * (chgCost / tChg) : 0;
 
     // חיסכון שנתי + החזר השקעה — תמיד על כל הנתונים (שנה מייצגת), לא תלוי בתצוגה,
     // אחרת עונה עם מרווח פסגה/שפל קטן תעוות את ההערכה.
-    let netFull = 0, disFull = 0;
-    for (let i = 0; i < N; i++) { const dd = discharge[i] || 0; netFull += (dd - (charge[i] || 0)) * slotTar[i][pf]; disFull += dd; }
+    let costNoFull = 0, costWithFull = 0, disFull = 0;
+    for (let i = 0; i < N; i++) {
+      const p = slotTar[i][pf], iv = Number.isFinite(imp[i]) ? imp[i] : 0, dd = discharge[i] || 0, cc = charge[i] || 0;
+      costNoFull += iv * p; costWithFull += Math.max(0, iv + cc - dd) * p; disFull += dd;
+    }
     const daysFull = N / 96;
-    const savePerYear = netFull * 365 / daysFull;
+    const savePerYear = (costNoFull - costWithFull) * 365 / daysFull;   // הפרש עלות אמיתי (מקוזז יצוא-PV)
 
     // עלות התקנה (CAPEX) + החזר השקעה
     const b = state.bat, capTot = b.cab * b.cap;
     const usableCap = capTot * (b.socMax - b.socMin) / 100;
     const capex = state.cost.perKwh * capTot + state.cost.fixed;
     const payback = savePerYear > 0 ? capex / savePerYear : Infinity;
-    // מחזורים שקולים לשנה = תפוקת פריקה שנתית / קיבולת שמישה
-    const cyclesPerYear = usableCap > 0 ? (disFull * 365 / daysFull) / usableCap : 0;
+    // מחזור טעינה = פריקה של 100% מהקיבולת הנקובה (0→100%). לכן: פריקה שנתית / קיבולת נקובה.
+    const cyclesPerYear = capTot > 0 ? (disFull * 365 / daysFull) / capTot : 0;
 
     // שורה 1 — פירוק אנרגיה וכלכלה (קוט״ש + ₪), בתחום המוצג
     const dual = (lbl, kwh, ils, c) => `
@@ -467,8 +476,9 @@
       ? `<b>אגירה חכמה:</b> הסוללה מחזורית רק כשכדאי (פסגה×נצילות > שפל) — פעילה ב-<b>${nf0.format(activeFull)} מתוך ${nf0.format(daysN)} ימים</b> (${nf0.format(100*activeFull/daysN)}%). בעונות המעבר מושבתת (מרווח זעום/מפסיד) → פחות בלאי והחזר מהיר יותר.`
       : `<b>אגירה תמיד פעילה:</b> מחזור בכל יום שיש בו פסגה, גם כשהמרווח מפסיד (עונות מעבר). מומלץ לעבור ל"חכמה".`;
     document.getElementById("storeFootnote").innerHTML =
-      `עלות החשמל = עלות היבוא מהרשת בתעו״ז (${state.vat==="vat"?"כולל":"ללא"} מע״מ). רווח ממוצע נטו: <b>${nf2.format(spread)} ₪/קוט״ש נפרק</b>. ` +
-      `CAPEX = ${nf0.format(state.cost.perKwh)}₪×${nf0.format(capTot)}kWh + ${nf0.format(state.cost.fixed)}₪. ${policyTxt}`;
+      `הפריקה מכסה את <b>מלוא העומס</b> בפסגה (עד הספק ה-AC). "חיסכון בתחום" = עלות היבוא ללא אגירה − עם אגירה ` +
+      `(${state.vat==="vat"?"כולל":"ללא"} מע״מ). שים לב: פריקה מעבר לפער-היבוא מקזזת PV שנפלט לרשת, ולכן אינה חוסכת בחשבון הצריכה. ` +
+      `מחזור = פריקת 100% מהקיבולת הנקובה (${nf0.format(capTot)}kWh). CAPEX = ${nf0.format(state.cost.perKwh)}₪×${nf0.format(capTot)} + ${nf0.format(state.cost.fixed)}₪. ${policyTxt}`;
   }
 
   function baseOpts(unit, stacked) {
