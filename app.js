@@ -99,7 +99,7 @@
     anchor: null,           // Date (UTC חצות) המייצג את התקופה הנוכחית
     season: 1,              // עונה לתצוגת "יום ממוצע עונתי": 0=אביב 1=קיץ 2=סתיו 3=חורף
     res: "day", rStart: 0, rEnd: N - 1,   // נגזרים מ-view+anchor
-    bat: { cab: 1, cap: 261, ac: 125, socMax: 95, socMin: 20, eff: 90 },  // אגירה
+    bat: { cab: 1, cap: 261, ac: 125, socMax: 95, socMin: 20, eff: 90, smart: true },  // אגירה (smart=רק כשכדאי)
     cost: { perKwh: 190, fixed: 25000 },  // עלות התקנה: ₪/kWh + קבוע
   };
   // 4 עונות מטאורולוגיות (לתצוגה העונתית)
@@ -199,6 +199,16 @@
     const days = Math.floor(N / 96);
     for (let d = 0; d < days; d++) {
       const s0 = d * 96, s1 = s0 + 95;
+      // אגירה חכמה: לחזור רק כשהארביטראז' כדאי (פסגה×נצילות > שפל).
+      // בעונות מעבר המרווח זעום ומחזור מפסיד — עדיף להשבית ולחסוך בבלאי.
+      if (b.smart) {
+        let peakP = 0, offP = 0;
+        for (let i = s0; i <= s1; i++) {
+          if (slotTar[i].per === "פסגה") peakP = slotTar[i].priceVat;
+          else offP = slotTar[i].priceVat;
+        }
+        if (!(peakP * eff > offP)) continue;   // לא כדאי — הסוללה במנוחה היום
+      }
       // פריקה בפסגה: מקזז יבוא, מוגבל בהספק, בקיבולת שמישה
       let Edis = 0;
       for (let i = s0; i <= s1 && Edis < usable; i++) {
@@ -371,14 +381,20 @@
       <div class="kpi"><div class="lbl"><span class="dot" style="background:${c.c}"></span>${c.lbl}</div>
       <div class="val">${c.txt ? c.txt : fmtILS(c.v)}</div></div>`).join("");
 
+    // ימים פעילים (מחזורי סוללה) — מדד לבלאי/אורך חיים
+    let activeFull = 0; const daysN = Math.floor(N / 96);
+    for (let d = 0; d < daysN; d++) { for (let h = 0; h < 96; h++) { if (discharge[d*96+h] > 0) { activeFull++; break; } } }
+
     const usable = capTot * (b.socMax - b.socMin) / 100, pTot = b.cab * b.ac;
     document.getElementById("bSpec").innerHTML =
       `סה״כ: <b>${nf0.format(capTot)} kWh</b> · שמיש <b>${nf0.format(usable)} kWh</b> · הספק <b>${nf0.format(pTot)} kW</b>`;
     const spread = tDis > 0 ? net / tDis : 0;
+    const policyTxt = b.smart
+      ? `<b>אגירה חכמה:</b> הסוללה מחזורית רק כשכדאי (פסגה×נצילות > שפל) — פעילה ב-<b>${nf0.format(activeFull)} מתוך ${nf0.format(daysN)} ימים</b> (${nf0.format(100*activeFull/daysN)}%). בעונות המעבר מושבתת (מרווח זעום/מפסיד) → פחות בלאי והחזר מהיר יותר.`
+      : `<b>אגירה תמיד פעילה:</b> מחזור בכל יום שיש בו פסגה, גם כשהמרווח מפסיד (עונות מעבר). מומלץ לעבור ל"חכמה".`;
     document.getElementById("storeFootnote").innerHTML =
-      `עלות החשמל = עלות היבוא מהרשת בתעו״ז (${state.vat==="vat"?"כולל":"ללא"} מע״מ). "עם אגירה" = טעינה בשפל מוסיפה ליבוא, פריקה בפסגה מקזזת. ` +
-      `רווח ממוצע נטו: <b>${nf2.format(spread)} ₪/קוט״ש נפרק</b>. CAPEX = ${nf0.format(state.cost.perKwh)}₪×${nf0.format(capTot)}kWh + ${nf0.format(state.cost.fixed)}₪. ` +
-      `הסדרה <b>יבוא מהרשת</b> בגרף כבר משקפת את האגירה (בפסגה→0, בלילה→טעינה).`;
+      `עלות החשמל = עלות היבוא מהרשת בתעו״ז (${state.vat==="vat"?"כולל":"ללא"} מע״מ). רווח ממוצע נטו: <b>${nf2.format(spread)} ₪/קוט״ש נפרק</b>. ` +
+      `CAPEX = ${nf0.format(state.cost.perKwh)}₪×${nf0.format(capTot)}kWh + ${nf0.format(state.cost.fixed)}₪. ${policyTxt}`;
   }
 
   function baseOpts(unit, stacked) {
@@ -512,6 +528,10 @@
         if (!isNaN(v)) { state.bat[key] = v; simulateStorage(); refresh(); }
       };
     }
+    seg("smartSeg", [{v:"smart",t:"חכמה (רק כשכדאי)"},{v:"always",t:"תמיד פעילה"}],
+      state.bat.smart ? "smart" : "always",
+      v => { state.bat.smart = (v === "smart"); simulateStorage(); refresh(); });
+
     // בקרות עלות התקנה (לא משנות סימולציה — רק CAPEX/החזר)
     const cmap = { bCostKwh:"perKwh", bCostFixed:"fixed" };
     for (const [id, key] of Object.entries(cmap)) {
