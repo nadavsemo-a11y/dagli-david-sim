@@ -71,18 +71,18 @@
   const SERIES_ARR = { pv, imp, exp, self, load, cons, bidir, charge, discharge, soc, impBat };
 
   // ---- הגדרת סדרות לתצוגה (צבעים מ-theme.css) ----
-  // סדרות האגירה (charge/discharge/impBat) מתווספות כפרמטרים רגילים בגרף הראשי,
-  // כבויות כברירת מחדל — להפעלה בבחינת כדאיות הארביטראז'.
+  // "יבוא מהרשת" מציג את המציאות: impBat = יבוא + טעינה − פריקה. כשאין אגירה impBat==imp.
+  // הבסיס ההיסטורי (imp הגולמי) זמין כסדרת השוואה "יבוא — בלי אגירה", כבויה כברירת מחדל.
   const SERIES = [
-    { id: "load",      name: "סך עומס",        color: cv("--s-load"),      on: true },
-    { id: "imp",       name: "יבוא מהרשת",      color: cv("--s-imp"),       on: true },
-    { id: "pv",        name: "ייצור PV",        color: cv("--s-pv"),        on: true },
-    { id: "exp",       name: "יצוא לרשת",       color: cv("--s-exp"),       on: true },
-    { id: "self",      name: "צריכה עצמית",     color: cv("--s-self"),      on: true },
-    { id: "cons",      name: "מונה צריכה",      color: cv("--s-cons"),      on: false },
-    { id: "charge",    name: "טעינת אגירה",     color: cv("--s-charge"),    on: false, grp: "אגירה" },
-    { id: "discharge", name: "פריקת אגירה",     color: cv("--s-discharge"), on: false, grp: "אגירה" },
-    { id: "impBat",    name: "יבוא עם אגירה",   color: cv("--brand"),       on: false, grp: "אגירה", dash: true },
+    { id: "load",      name: "סך עומס",              color: cv("--s-load"),      on: true },
+    { id: "impBat",    name: "יבוא מהרשת",            color: cv("--s-imp"),       on: true },
+    { id: "pv",        name: "ייצור PV",              color: cv("--s-pv"),        on: true },
+    { id: "exp",       name: "יצוא לרשת",             color: cv("--s-exp"),       on: true },
+    { id: "self",      name: "צריכה עצמית",           color: cv("--s-self"),      on: true },
+    { id: "cons",      name: "מונה צריכה",            color: cv("--s-cons"),      on: false },
+    { id: "charge",    name: "טעינת אגירה",           color: cv("--s-charge"),    on: false, grp: "אגירה" },
+    { id: "discharge", name: "פריקת אגירה",           color: cv("--s-discharge"), on: false, grp: "אגירה" },
+    { id: "imp",       name: "יבוא — בלי אגירה (בסיס)", color: cv("--s-cons"),     on: false, grp: "אגירה", dash: true },
   ];
 
   // ---- מצב ----
@@ -184,7 +184,8 @@
   // מודל ארביטראז' יומי: פורק בשעות פסגה כדי לקזז יבוא (בלי יצוא לרשת),
   // וטוען בשעות שפל (עדיפות לפני הפסגה). מחשב charge[], discharge[], soc[].
   function fillImpBat() {
-    for (let i = 0; i < N; i++) impBat[i] = imp[i] + (charge[i] || 0) - (discharge[i] || 0);
+    for (let i = 0; i < N; i++)
+      impBat[i] = Number.isFinite(imp[i]) ? Math.max(0, imp[i] + (charge[i] || 0) - (discharge[i] || 0)) : NaN;
   }
   function simulateStorage() {
     const b = state.bat;
@@ -368,7 +369,7 @@
     document.getElementById("storeFootnote").innerHTML =
       `עלות החשמל = עלות היבוא מהרשת בתעו״ז (${state.vat==="vat"?"כולל":"ללא"} מע״מ). "עם אגירה" = טעינה בשפל מוסיפה ליבוא, פריקה בפסגה מקזזת. ` +
       `רווח ממוצע נטו: <b>${nf2.format(spread)} ₪/קוט״ש נפרק</b>. CAPEX = ${nf0.format(state.cost.perKwh)}₪×${nf0.format(capTot)}kWh + ${nf0.format(state.cost.fixed)}₪. ` +
-      `בגרף הראשי הפעל <b>טעינת/פריקת אגירה / יבוא עם אגירה</b> לבחינה חזותית.`;
+      `הסדרה <b>יבוא מהרשת</b> בגרף כבר משקפת את האגירה (בפסגה→0, בלילה→טעינה).`;
   }
 
   function baseOpts(unit, stacked) {
@@ -400,7 +401,7 @@
     const sc = scope();
     for (let i = sc.a; i <= sc.b; i++) {
       if (sc.ok && !sc.ok(i)) continue;
-      tot.pv += pv[i]||0; tot.imp += imp[i]||0; tot.exp += exp[i]||0;
+      tot.pv += pv[i]||0; tot.imp += impBat[i]||0; tot.exp += exp[i]||0;   // יבוא = מציאות (עם אגירה)
       tot.self += self[i]||0; tot.load += load[i]||0;
       const q = SERIES_ARR[state.costQty][i];
       if (Number.isFinite(q)) cost += q * slotTar[i][priceField];
@@ -448,7 +449,7 @@
     html += `<tr class="total"><td>סה״כ</td><td class="num">${nf0.format(Math.round(totKwh))}</td><td></td>
       <td class="num">${fmtILS(totCost)}</td><td class="num">100%</td></tr></tbody>`;
     document.getElementById("costTable").innerHTML = html;
-    const qName = { load:"סך העומס", imp:"היבוא מהרשת", self:"הצריכה העצמית" }[state.costQty];
+    const qName = { load:"סך העומס", impBat:"היבוא מהרשת (עם אגירה)", imp:"היבוא מהרשת (בלי אגירה)", self:"הצריכה העצמית" }[state.costQty];
     document.getElementById("costFootnote").innerHTML =
       `החישוב על <b>${qName}</b> · מחירים ${state.vat==="vat"?"כולל":"ללא"} מע״מ (₪/קוט״ש). ` +
       `ממוצע משוקלל: <b>${totKwh>0?nf2.format(totCost/totKwh):"0"} ₪/קוט״ש</b>.`;
