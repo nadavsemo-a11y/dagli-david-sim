@@ -76,8 +76,8 @@
   // הבסיס ההיסטורי (imp הגולמי) זמין כסדרת השוואה "יבוא — בלי אגירה", כבויה כברירת מחדל.
   const SERIES = [
     { id: "load",      name: "סך עומס",              color: cv("--s-load"),      on: true },
-    { id: "self",      name: "צריכה עצמית",           color: cv("--s-self"),      on: true },
     { id: "discharge", name: "פריקה מאגירה",          color: cv("--s-discharge"), on: true },
+    { id: "self",      name: "צריכה עצמית (PV)",       color: cv("--s-self"),      on: false },
     { id: "impBat",    name: "יבוא מהרשת",            color: cv("--s-imp"),       on: false },
     { id: "pv",        name: "ייצור PV",              color: cv("--s-pv"),        on: false },
     { id: "exp",       name: "יצוא לרשת",             color: cv("--s-exp"),       on: false },
@@ -105,7 +105,7 @@
   };
   // בתצוגת עמודות: "סך עומס" מצויר כהשלמה מעל רכיבי-העומס המוצגים (צריכה עצמית / פריקה),
   // כך שהעמודה תמיד מגיעה לגובה סך העומס. הסתרת רכיב → העומס תופס את מקומו (עד Y=0).
-  const LOAD_COMP = ["discharge", "self"];   // סדר עדיפות בערימה (פריקה מכסה עומס קודם)
+  const LOAD_COMP = ["discharge"];   // העומס = פריקה + השלמת רשת (PV נמכר בנפרד, אינו רכיב עומס)
   // 4 עונות מטאורולוגיות (לתצוגה העונתית)
   const SEASON4 = ["אביב", "קיץ", "סתיו", "חורף"];
   const season4of = m => (m >= 3 && m <= 5) ? 0 : (m >= 6 && m <= 8) ? 1 : (m >= 9 && m <= 11) ? 2 : 3;
@@ -205,8 +205,9 @@
   // מודל ארביטראז' יומי: פורק בשעות פסגה כדי לקזז יבוא (בלי יצוא לרשת),
   // וטוען בשעות שפל (עדיפות לפני הפסגה). מחשב charge[], discharge[], soc[].
   function fillImpBat() {
+    // יבוא מהרשת לצריכה = עומס מלא + טעינה − פריקה (PV נמכר בנפרד ואינו מקזז את הצריכה)
     for (let i = 0; i < N; i++)
-      impBat[i] = Number.isFinite(imp[i]) ? Math.max(0, imp[i] + (charge[i] || 0) - (discharge[i] || 0)) : NaN;
+      impBat[i] = Number.isFinite(load[i]) ? Math.max(0, load[i] + (charge[i] || 0) - (discharge[i] || 0)) : NaN;
   }
   function simulateStorage() {
     const b = state.bat;
@@ -380,8 +381,9 @@
   function renderStore(agg) {
     const pf = state.vat === "vat" ? "priceVat" : "priceNoVat";
     const sc = scope();
-    let tImp = 0, tDis = 0, tChg = 0, gross = 0, chgCost = 0, opIls = 0, opKwh = 0;
+    let tDis = 0, tChg = 0, gross = 0, chgCost = 0, opIls = 0, opKwh = 0;
     let costNo = 0, costWith = 0;
+    // בסיס: העומס המלא נקנה מהרשת (PV נמכר בנפרד). הסוללה מחליפה חלק מהעומס בפסגה.
     for (let i = sc.a; i <= sc.b; i++) {
       if (sc.ok && !sc.ok(i)) continue;
       const dd = discharge[i] || 0, cc = charge[i] || 0;
@@ -389,14 +391,13 @@
       const price = slotTar[i][pf];
       gross += dd * price;                 // ערך החשמל שנצרך מהסוללה (במחיר התעו״ז שקוזז)
       chgCost += cc * price;               // עלות הטעינה (בשפל)
-      const impV = Number.isFinite(imp[i]) ? imp[i] : 0;
-      tImp += impV;
-      costNo += impV * price;              // עלות היבוא ללא אגירה
-      costWith += Math.max(0, impV + cc - dd) * price;   // עלות היבוא עם אגירה
-      opKwh += Math.max(0, impV - dd);                   // יבוא תפעולי (לא-שלילי)
-      opIls += Math.max(0, impV - dd) * price;           // עלות תפעול מהרשת (בלי טעינה)
+      const loadV = Number.isFinite(load[i]) ? load[i] : 0;
+      costNo += loadV * price;             // עלות העומס ללא אגירה (הכל מהרשת)
+      costWith += Math.max(0, loadV + cc - dd) * price;  // עלות עם אגירה = עומס+טעינה−פריקה
+      opKwh += Math.max(0, loadV - dd);                  // עומס שסופק מהרשת (בלי טעינה)
+      opIls += Math.max(0, loadV - dd) * price;
     }
-    const net = costNo - costWith;         // חיסכון בתחום = הפרש עלות החשמל (יבוא) עם/בלי אגירה
+    const net = costNo - costWith;         // חיסכון בתחום = הפרש עלות העומס עם/בלי אגירה
     const lossKwh = tChg - tDis;           // הפסד המרה (נצילות)
     const lossIls = tChg > 0 ? lossKwh * (chgCost / tChg) : 0;
 
@@ -404,11 +405,11 @@
     // אחרת עונה עם מרווח פסגה/שפל קטן תעוות את ההערכה.
     let costNoFull = 0, costWithFull = 0, disFull = 0;
     for (let i = 0; i < N; i++) {
-      const p = slotTar[i][pf], iv = Number.isFinite(imp[i]) ? imp[i] : 0, dd = discharge[i] || 0, cc = charge[i] || 0;
-      costNoFull += iv * p; costWithFull += Math.max(0, iv + cc - dd) * p; disFull += dd;
+      const p = slotTar[i][pf], lv = Number.isFinite(load[i]) ? load[i] : 0, dd = discharge[i] || 0, cc = charge[i] || 0;
+      costNoFull += lv * p; costWithFull += Math.max(0, lv + cc - dd) * p; disFull += dd;
     }
     const daysFull = N / 96;
-    const savePerYear = (costNoFull - costWithFull) * 365 / daysFull;   // הפרש עלות אמיתי (מקוזז יצוא-PV)
+    const savePerYear = (costNoFull - costWithFull) * 365 / daysFull;   // הפרש עלות העומס עם/בלי אגירה
 
     // עלות התקנה (CAPEX) + החזר השקעה
     const b = state.bat, capTot = b.cab * b.cap;
@@ -427,7 +428,7 @@
       <div class="kpi"><div class="lbl"><span class="dot" style="background:${c}"></span>${lbl}</div>
         <div class="val">${fmtILS(ils)}</div></div>`;
     document.getElementById("storeKpis").innerHTML =
-      dual("צריכת תפעול מהרשת (בלי טעינה)", opKwh, opIls, cv("--s-imp")) +
+      dual("עומס שסופק מהרשת (בלי טעינה)", opKwh, opIls, cv("--s-imp")) +
       dual("חשמל שנטען (רשת→סוללה)", tChg, chgCost, cv("--s-charge")) +
       dual("חשמל שנצרך מהסוללה (פריקה)", tDis, gross, cv("--s-discharge")) +
       dual("הפסד המרה (נצילות)", lossKwh, lossIls, cv("--gray")) +
@@ -476,8 +477,8 @@
       ? `<b>אגירה חכמה:</b> הסוללה מחזורית רק כשכדאי (פסגה×נצילות > שפל) — פעילה ב-<b>${nf0.format(activeFull)} מתוך ${nf0.format(daysN)} ימים</b> (${nf0.format(100*activeFull/daysN)}%). בעונות המעבר מושבתת (מרווח זעום/מפסיד) → פחות בלאי והחזר מהיר יותר.`
       : `<b>אגירה תמיד פעילה:</b> מחזור בכל יום שיש בו פסגה, גם כשהמרווח מפסיד (עונות מעבר). מומלץ לעבור ל"חכמה".`;
     document.getElementById("storeFootnote").innerHTML =
-      `הפריקה מכסה את <b>מלוא העומס</b> בפסגה (עד הספק ה-AC). "חיסכון בתחום" = עלות היבוא ללא אגירה − עם אגירה ` +
-      `(${state.vat==="vat"?"כולל":"ללא"} מע״מ). שים לב: פריקה מעבר לפער-היבוא מקזזת PV שנפלט לרשת, ולכן אינה חוסכת בחשבון הצריכה. ` +
+      `בסיס: כל <b>העומס</b> נקנה מהרשת בתעו״ז (ה-PV נמכר לחח״י בנפרד ואינו מקזז את הצריכה). הסוללה מכסה את מלוא העומס בפסגה (עד הספק AC). ` +
+      `"חיסכון בתחום" = עלות העומס ללא אגירה − עם אגירה (${state.vat==="vat"?"כולל":"ללא"} מע״מ). ` +
       `מחזור = פריקת 100% מהקיבולת הנקובה (${nf0.format(capTot)}kWh). CAPEX = ${nf0.format(state.cost.perKwh)}₪×${nf0.format(capTot)} + ${nf0.format(state.cost.fixed)}₪. ${policyTxt}`;
   }
 
