@@ -311,21 +311,25 @@
   function renderStore(agg) {
     const pf = state.vat === "vat" ? "priceVat" : "priceNoVat";
     const sc = scope();
-    let tDis = 0, tChg = 0, gross = 0, chgCost = 0;
+    let tImp = 0, tDis = 0, tChg = 0, gross = 0, chgCost = 0, opIls = 0;
     let costNo = 0, costWith = 0;
     for (let i = sc.a; i <= sc.b; i++) {
       if (sc.ok && !sc.ok(i)) continue;
       const dd = discharge[i] || 0, cc = charge[i] || 0;
       tDis += dd; tChg += cc;
       const price = slotTar[i][pf];
-      gross += dd * price;                 // ערך אנרגיית הפסגה שקוזזה
-      chgCost += cc * price;               // עלות טעינה בשפל
-      // עלות חשמל = עלות היבוא מהרשת בתעו״ז. עם אגירה: היבוא = imp+טעינה−פריקה.
+      gross += dd * price;                 // ערך החשמל שנצרך מהסוללה (במחיר התעו״ז שקוזז)
+      chgCost += cc * price;               // עלות הטעינה (בשפל)
       const impV = Number.isFinite(imp[i]) ? imp[i] : 0;
-      costNo += impV * price;
-      costWith += Math.max(0, impV + cc - dd) * price;
+      tImp += impV;
+      costNo += impV * price;              // עלות היבוא ללא אגירה
+      costWith += Math.max(0, impV + cc - dd) * price;   // עלות היבוא עם אגירה
+      opIls += Math.max(0, impV - dd) * price;           // עלות תפעול מהרשת (בלי טעינה)
     }
-    const net = gross - chgCost;           // חיסכון בתחום = costNo - costWith
+    const net = gross - chgCost;           // הפרש מחיר = חיסכון בתחום = costNo - costWith
+    const opKwh = tImp - tDis;             // צריכת תפעול מהרשת (בלי טעינה) = יבוא − פריקה
+    const lossKwh = tChg - tDis;           // הפסד המרה (נצילות)
+    const lossIls = tChg > 0 ? lossKwh * (chgCost / tChg) : 0;
 
     // חיסכון שנתי + החזר השקעה — תמיד על כל הנתונים (שנה מייצגת), לא תלוי בתצוגה,
     // אחרת עונה עם מרווח פסגה/שפל קטן תעוות את ההערכה.
@@ -339,21 +343,26 @@
     const capex = state.cost.perKwh * capTot + state.cost.fixed;
     const payback = savePerYear > 0 ? capex / savePerYear : Infinity;
 
-    // שורה 1 — אנרגיה + חיסכון בתחום
-    const cards = [
-      { lbl: "אנרגיה שנטענה", v: tChg, u: "kWh", c: cv("--s-charge") },
-      { lbl: "אנרגיה שנפרקה", v: tDis, u: "kWh", c: cv("--s-discharge") },
-      { lbl: "עלות ללא אגירה", v: costNo, c: cv("--s-imp"), ils: true },
-      { lbl: "עלות עם אגירה", v: costWith, c: cv("--brand-accent"), ils: true },
-      { lbl: "חיסכון בתחום", v: net, c: cv("--brand"), ils: true },
-    ];
-    document.getElementById("storeKpis").innerHTML = cards.map(c => `
-      <div class="kpi"><div class="lbl"><span class="dot" style="background:${c.c}"></span>${c.lbl}</div>
-      <div class="val">${c.ils ? fmtILS(c.v) : nf0.format(Math.round(c.v))} <span class="unit">${c.ils?"":c.u}</span></div></div>`).join("");
+    // שורה 1 — פירוק אנרגיה וכלכלה (קוט״ש + ₪), בתחום המוצג
+    const dual = (lbl, kwh, ils, c) => `
+      <div class="kpi"><div class="lbl"><span class="dot" style="background:${c}"></span>${lbl}</div>
+        <div class="val">${nf0.format(Math.round(kwh))} <span class="unit">kWh</span></div>
+        <div style="font-size:14px;font-weight:800;color:${c};margin-top:1px">${fmtILS(ils)}</div></div>`;
+    const solo = (lbl, ils, c) => `
+      <div class="kpi"><div class="lbl"><span class="dot" style="background:${c}"></span>${lbl}</div>
+        <div class="val">${fmtILS(ils)}</div></div>`;
+    document.getElementById("storeKpis").innerHTML =
+      dual("צריכת תפעול מהרשת (בלי טעינה)", opKwh, opIls, cv("--s-imp")) +
+      dual("חשמל שנטען (רשת→סוללה)", tChg, chgCost, cv("--s-charge")) +
+      dual("חשמל שנצרך מהסוללה (פריקה)", tDis, gross, cv("--s-discharge")) +
+      dual("הפסד המרה (נצילות)", lossKwh, lossIls, cv("--gray")) +
+      solo("הפרש מחיר (חיסכון בתחום)", net, cv("--brand"));
 
-    // שורה 2 — כדאיות השקעה
+    // שורה 2 — עלות כוללת + כדאיות השקעה
     const paybackTxt = isFinite(payback) ? nf1.format(payback) + " שנים" : "—";
     const cards2 = [
+      { lbl: "עלות חשמל ללא אגירה", v: costNo, c: cv("--s-imp"), ils: true },
+      { lbl: "עלות חשמל עם אגירה", v: costWith, c: cv("--brand-accent"), ils: true },
       { lbl: "חיסכון שנתי (מוערך)", v: savePerYear, c: cv("--brand"), ils: true },
       { lbl: "עלות התקנה (CAPEX)", v: capex, c: cv("--warning"), ils: true },
       { lbl: "החזר השקעה", txt: paybackTxt, c: cv("--brand-dark") },
