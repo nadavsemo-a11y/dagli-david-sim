@@ -31,14 +31,18 @@
   --s-self:      var(--info);         /* צריכה עצמית — כחול */
   --s-load:      var(--brand-dark);   /* סך עומס — טורקיז כהה */
   --s-cons:      var(--gray);         /* מונה צריכה — אפור */
-  --s-charge:    var(--info);         /* טעינת אגירה — כחול (משיכה מהרשת) */
-  --s-discharge: var(--brand);        /* פריקת אגירה — טורקיז */
+  --s-charge:    #7048e8;             /* טעינת אגירה — סגול (מובחן) */
+  --s-discharge: #e64980;             /* פריקת אגירה — מגנטה (מובחן מהעומס) */
   --s-soc:       var(--pink);         /* מצב טעינה (SOC) */
 
   /* --- צבעי תעריף תעו״ז (פסגה=חם, שפל=בהיר; בגוני enSights) --- */
   --t-summer-peak: #ed1c24;  --t-summer-off: #f6a6a9;
   --t-winter-peak: #0a6b66;  --t-winter-off: #7fd0c8;
   --t-trans-peak:  #f27212;  --t-trans-off:  #f9c39a;
+
+  /* --- רקע הגרף לפי תקופת תעו״ז (פסגה=אדום, שפל=ירוק; שקיפות ~15%) --- */
+  --bg-peak: rgba(237, 28, 36, 0.15);
+  --bg-off:  rgba(51, 174, 154, 0.15);
 }
 
 * { box-sizing: border-box; }

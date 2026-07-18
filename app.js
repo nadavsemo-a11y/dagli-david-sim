@@ -10,6 +10,30 @@
   Chart.defaults.animation = false;          // ביצועים: ללא אנימציה בעדכונים
   Chart.defaults.font.family = cv("--font") || "Arial, sans-serif";
   Chart.defaults.color = cv("--muted");
+
+  // רקע הגרף לפי תקופת תעו״ז: אדום=פסגה, ירוק=שפל (רק כשציר-ה-X הוא שעת-יום)
+  Chart.register({
+    id: "tariffBg",
+    beforeDraw(chart) {
+      const cfg = chart.options.plugins && chart.options.plugins.tariffBg;
+      if (!cfg || !cfg.bands || !cfg.bands.length) return;
+      const { ctx, chartArea: ca, scales: { x } } = chart;
+      const bands = cfg.bands, n = bands.length;
+      const step = n > 1 ? (x.getPixelForValue(1) - x.getPixelForValue(0)) : (ca.right - ca.left);
+      ctx.save();
+      for (let i = 0; i < n; i++) {
+        const b = bands[i];
+        if (b == null) continue;
+        const c = x.getPixelForValue(i);
+        let left = Math.max(ca.left, c - step / 2), right = Math.min(ca.right, c + step / 2);
+        if (right <= left) continue;
+        ctx.fillStyle = b ? cfg.peakColor : cfg.offColor;
+        ctx.fillRect(left, ca.top, right - left, ca.bottom - ca.top);
+      }
+      ctx.restore();
+    },
+  });
+
   const D = window.METER_DATA, T = window.TARIFF;
   const N = D.meta.n, STEP_MIN = D.meta.stepMinutes;      // 15
   const SLOT_H = STEP_MIN / 60;                            // 0.25 שעה לסלוט
@@ -133,11 +157,12 @@
       const bk = bucketOf(i);
       let o = map.get(bk.key);
       if (!o) {
-        o = { label: bk.label, hours: 0, n: 0, vals: {}, peak: {}, cnt: {}, tar: {} };
+        o = { label: bk.label, hours: 0, n: 0, vals: {}, peak: {}, cnt: {}, tar: {}, peakN: 0, offN: 0 };
         for (const s of SERIES) { o.vals[s.id] = 0; o.peak[s.id] = 0; o.cnt[s.id] = 0; }
         map.set(bk.key, o); order.push(bk.key);
       }
       o.n++; o.hours += SLOT_H;
+      if (slotTar[i].per === "פסגה") o.peakN++; else o.offN++;
       for (const s of SERIES) {
         const v = SERIES_ARR[s.id][i];
         if (!Number.isFinite(v)) continue;     // סלוט חוסר-נתונים — מדלגים
@@ -248,6 +273,11 @@
       data: { labels, datasets },
       options: baseOpts(unit, false),
     };
+    // רקע תעו״ז — רק כשציר-ה-X הוא שעת-יום (תצוגת יום / יום ממוצע)
+    if (state.view === "day" || isAvgView()) {
+      const bands = agg.order.map(k => { const o = agg.map.get(k); return o.peakN >= o.offN ? (o.peakN > 0) : false; });
+      cfg.options.plugins.tariffBg = { bands, peakColor: cv("--bg-peak"), offColor: cv("--bg-off") };
+    }
     if (flowChart) flowChart.destroy();
     flowChart = new Chart(document.getElementById("flowChart"), cfg);
   }
