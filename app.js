@@ -100,7 +100,7 @@
     anchor: null,           // Date (UTC חצות) המייצג את התקופה הנוכחית
     season: 1,              // עונה לתצוגת "יום ממוצע עונתי": 0=אביב 1=קיץ 2=סתיו 3=חורף
     res: "day", rStart: 0, rEnd: N - 1,   // נגזרים מ-view+anchor
-    bat: { cab: 1, cap: 261, ac: 125, socMax: 95, socMin: 20, eff: 90, smart: true },  // אגירה (smart=רק כשכדאי)
+    bat: { cab: 1, cap: 261, ac: 125, socMax: 95, socMin: 20, eff: 90, smart: true, maxCycles: 6000, calLife: 15 },  // אגירה
     cost: { perKwh: 190, fixed: 25000 },  // עלות התקנה: ₪/kWh + קבוע
   };
   // בתצוגת עמודות: "סך עומס" מצויר כהשלמה מעל רכיבי-העומס המוצגים (צריכה עצמית / פריקה),
@@ -438,6 +438,23 @@
       <div class="kpi"><div class="lbl"><span class="dot" style="background:${c.c}"></span>${c.lbl}</div>
       <div class="val">${c.txt ? c.txt : fmtILS(c.v)}</div></div>`).join("");
 
+    // שורה 3 — מודל אורך-חיים: מה שמגביל קודם (מחזורים / קלנדרי) → שנות חיים → ROI מצטבר
+    const lifeByCyc = cyclesPerYear > 0 ? b.maxCycles / cyclesPerYear : Infinity;
+    const lifeYears = Math.min(lifeByCyc, b.calLife);
+    const limiter = lifeByCyc < b.calLife ? "מחזורים" : "קלנדרי";
+    const lifeSavings = savePerYear * lifeYears;
+    const lifeProfit = lifeSavings - capex;
+    const roi = capex > 0 ? (lifeProfit / capex) * 100 : 0;
+    const cards3 = [
+      { lbl: "אורך חיים צפוי", txt: (isFinite(lifeYears)?nf1.format(lifeYears):"∞") + " שנים · " + limiter, c: cv("--info") },
+      { lbl: "חיסכון מצטבר לכל החיים", v: lifeSavings, c: cv("--brand"), ils: true },
+      { lbl: "רווח נטו לכל החיים", v: lifeProfit, c: lifeProfit>=0?cv("--brand-accent"):cv("--danger"), ils: true },
+      { lbl: "החזר השקעתי (ROI)", txt: nf0.format(Math.round(roi)) + "%", c: cv("--brand-dark") },
+    ];
+    document.getElementById("storeLifeKpis").innerHTML = cards3.map(c => `
+      <div class="kpi"><div class="lbl"><span class="dot" style="background:${c.c}"></span>${c.lbl}</div>
+      <div class="val">${c.txt ? c.txt : fmtILS(c.v)}</div></div>`).join("");
+
     // ימים פעילים (מחזורי סוללה) — מדד לבלאי/אורך חיים
     let activeFull = 0; const daysN = Math.floor(N / 96);
     for (let d = 0; d < daysN; d++) { for (let h = 0; h < 96; h++) { if (discharge[d*96+h] > 0) { activeFull++; break; } } }
@@ -595,6 +612,14 @@
       document.getElementById(id).onchange = e => {
         const v = parseFloat(e.target.value);
         if (!isNaN(v)) { state.cost[key] = v; refresh(); }
+      };
+    }
+    // בקרות אורך-חיים (לא משנות סימולציה — רק מודל הכדאיות)
+    const lmap = { bMaxCyc:"maxCycles", bCalLife:"calLife" };
+    for (const [id, key] of Object.entries(lmap)) {
+      document.getElementById(id).onchange = e => {
+        const v = parseFloat(e.target.value);
+        if (!isNaN(v)) { state.bat[key] = v; refresh(); }
       };
     }
   }
